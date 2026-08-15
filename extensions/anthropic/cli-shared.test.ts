@@ -697,6 +697,46 @@ describe("normalizeClaudeBackendConfig", () => {
     ).toContain("bypassPermissions");
   });
 
+  it("keeps restrictive global exec security when the agent block omits it", () => {
+    expect(
+      normalizeClaudeArgs(["-p"], {
+        backendId: "claude-cli",
+        agentId: "partial-agent",
+        config: {
+          tools: { exec: { security: "deny", ask: "off" } },
+          agents: {
+            list: [
+              {
+                id: "partial-agent",
+                tools: { exec: { ask: "off" } },
+              },
+            ],
+          },
+        },
+      }),
+    ).not.toContain("bypassPermissions");
+  });
+
+  it("still lets an explicit per-agent exec mode override global security", () => {
+    expect(
+      normalizeClaudeArgs(["-p"], {
+        backendId: "claude-cli",
+        agentId: "yolo-agent",
+        config: {
+          tools: { exec: { security: "deny", ask: "off" } },
+          agents: {
+            list: [
+              {
+                id: "yolo-agent",
+                tools: { exec: { mode: "full" } },
+              },
+            ],
+          },
+        },
+      }),
+    ).toContain("bypassPermissions");
+  });
+
   it("does not infer live stdio when explicit transport overrides are incompatible", () => {
     const normalized = normalizeClaudeBackendConfig({
       command: "claude",
