@@ -567,10 +567,10 @@ export function createChangedNodeTestShards(
     return null;
   }
 
+  // Policy watches can name extension-owned files (such as a bundled manifest)
+  // that host suites scan without importing, so extension paths stay eligible.
   const policyTargetsByPath = new Map(
-    livePaths
-      .filter((changedPath) => !changedPath.startsWith("extensions/"))
-      .map((changedPath) => [changedPath, resolvePolicyTestTargets([changedPath])]),
+    livePaths.map((changedPath) => [changedPath, resolvePolicyTestTargets([changedPath])]),
   );
   const regularLivePaths = livePaths.filter(
     (changedPath) => !changedPath.startsWith("extensions/") && !isPolicyTestOwnedPath(changedPath),
