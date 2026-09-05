@@ -165,6 +165,7 @@ export function buildFalMusicGenerationProvider(): MusicGenerationProvider {
           provider: "fal",
           requestFailedMessage: "fal generated music download failed",
           maxBytes: resolveGeneratedMediaMaxBytes(req.cfg, "audio"),
+          validateBinaryResponse: true,
         });
         const lyrics =
           typeof payload === "object" && payload && !Array.isArray(payload)
