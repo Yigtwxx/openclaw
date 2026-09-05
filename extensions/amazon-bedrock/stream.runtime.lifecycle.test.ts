@@ -273,10 +273,35 @@ describe("Bedrock stream client lifecycle", () => {
     expectDestroyedClient(send, destroy);
   });
 
-  it("keeps partial-output stream failures out of transport-drop recovery", async () => {
+  it.each([
+    {
+      label: "text",
+      blocks: [{ contentBlockDelta: { contentBlockIndex: 0, delta: { text: "partial" } } }],
+      content: [{ type: "text", text: "partial" }],
+    },
+    {
+      label: "tool-only output",
+      blocks: [
+        {
+          contentBlockStart: {
+            contentBlockIndex: 0,
+            start: { toolUse: { toolUseId: "call_lookup", name: "lookup" } },
+          },
+        },
+        {
+          contentBlockDelta: {
+            contentBlockIndex: 0,
+            delta: { toolUse: { input: '{"query":"partial"}' } },
+          },
+        },
+        { contentBlockStop: { contentBlockIndex: 0 } },
+      ],
+      content: [],
+    },
+  ])("keeps failures after $label out of transport-drop recovery", async ({ blocks, content }) => {
     async function* failingStream() {
       yield { messageStart: { role: ConversationRole.ASSISTANT } };
-      yield { contentBlockDelta: { contentBlockIndex: 0, delta: { text: "partial" } } };
+      yield* blocks;
       throw Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
     }
     const send = vi.spyOn(BedrockRuntimeClient.prototype, "send").mockResolvedValue({
@@ -285,15 +310,22 @@ describe("Bedrock stream client lifecycle", () => {
     } as never);
     const destroy = vi.spyOn(BedrockRuntimeClient.prototype, "destroy");
 
-    const result = await streamBedrockForTest().result();
+    const stream = streamBedrockForTest();
+    const eventTypes: string[] = [];
+    for await (const event of stream) {
+      eventTypes.push(event.type);
+    }
+    const result = await stream.result();
 
     expect(result).toMatchObject({
       stopReason: "error",
       errorMessage: "socket hang up",
       errorCode: "ECONNRESET",
     });
-    expect(result.content).toEqual([{ type: "text", text: "partial" }]);
+    expect(result.content).toEqual(content);
     expect(result.diagnostics).toBeUndefined();
+    expect(eventTypes).not.toContain("toolcall_end");
+    expect(eventTypes.at(-1)).toBe("error");
     expectDestroyedClient(send, destroy);
   });
 });
