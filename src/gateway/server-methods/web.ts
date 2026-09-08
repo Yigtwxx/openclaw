@@ -8,6 +8,7 @@ import {
   validateWebLoginStartParams,
   validateWebLoginWaitParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { resolveChannelDefaultAccountId } from "../../channels/plugins/helpers.js";
 import { listChannelPlugins, normalizeChannelId } from "../../channels/plugins/index.js";
 import { listLoadedChannelPluginsForRegistry } from "../../channels/plugins/registry-loaded.js";
 import type { ChannelId } from "../../channels/plugins/types.public.js";
@@ -116,11 +117,10 @@ function resolveWebLoginRequest<TMethod extends WebLoginGatewayMethod>(params: {
   context: GatewayRequestContext;
   gatewayMethod: TMethod;
 }): {
-  accountId?: string;
+  accountId: string;
   provider: WebLoginProvider;
   run: NonNullable<WebLoginGateway[TMethod]>;
 } | null {
-  const accountId = resolveAccountId(params.rawParams);
   const provider = resolveWebLoginProvider(
     typeof params.rawParams.channel === "string" ? params.rawParams.channel : undefined,
   );
@@ -137,6 +137,11 @@ function resolveWebLoginRequest<TMethod extends WebLoginGatewayMethod>(params: {
     respondProviderUnsupported(params.respond, provider.id);
     return null;
   }
+  // An omitted account must resolve to one concrete account before lifecycle and login
+  // calls, so the QR pairing and the stop/restore around it address the same account.
+  const accountId =
+    resolveAccountId(params.rawParams) ??
+    resolveChannelDefaultAccountId({ plugin: provider, cfg: params.context.getRuntimeConfig() });
   return { accountId, provider, run: run.bind(gateway) as NonNullable<WebLoginGateway[TMethod]> };
 }
 

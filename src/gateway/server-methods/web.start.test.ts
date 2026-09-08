@@ -228,6 +228,7 @@ describe("webHandlers web.login.start", () => {
     mocks.listChannelPlugins.mockReturnValue([
       {
         id: "whatsapp",
+        config: { listAccountIds: () => ["default"] },
         gatewayMethods: ["web.login.start"],
         gateway: { loginWithQrStart },
       },
@@ -275,6 +276,7 @@ describe("webHandlers web.login.start", () => {
     mocks.listChannelPlugins.mockReturnValue([
       {
         id: "whatsapp",
+        config: { listAccountIds: () => ["default"] },
         gatewayMethods: ["web.login.start"],
         gateway,
       },
@@ -319,11 +321,13 @@ describe("webHandlers web.login.start", () => {
     mocks.listChannelPlugins.mockReturnValue([
       {
         id: "whatsapp",
+        config: { listAccountIds: () => ["default"] },
         gatewayMethods: ["web.login.start", "web.login.wait"],
         gateway: { loginWithQrStart: whatsappLogin, loginWithQrWait: vi.fn() },
       },
       {
         id: "openclaw-weixin",
+        config: { listAccountIds: () => ["default"] },
         gatewayMethods: ["web.login.start", "web.login.wait"],
         gateway: { loginWithQrStart: weixinLogin, loginWithQrWait: vi.fn() },
       },
@@ -361,6 +365,7 @@ describe("webHandlers web.login.start", () => {
     mocks.listChannelPlugins.mockReturnValue([
       {
         id: "whatsapp",
+        config: { listAccountIds: () => ["default"] },
         gatewayMethods: ["web.login.start"],
         gateway: { loginWithQrStart: whatsappLogin },
       },
@@ -387,17 +392,47 @@ describe("webHandlers web.login.start", () => {
     );
   });
 
+  it("scopes an account-less login to the resolved default account on a multi-account channel", async () => {
+    const loginWithQrStart = vi.fn().mockResolvedValue({ qrDataUrl: "data:image/png;base64,QQ==" });
+    mocks.listChannelPlugins.mockReturnValue([
+      {
+        id: "whatsapp",
+        config: {
+          listAccountIds: () => ["arnold", "valentina"],
+          defaultAccountId: () => "arnold",
+        },
+        gatewayMethods: ["web.login.start"],
+        gateway: { loginWithQrStart },
+      },
+    ]);
+    const { context, stopChannel } = createRunningWhatsappContext();
+    const respond = vi.fn();
+
+    await expectDefined(
+      webHandlers["web.login.start"],
+      'webHandlers["web.login.start"] test invariant',
+    )(createOptions({}, { respond, context }));
+
+    // The pairing and the lifecycle stop must address the same concrete account, and the
+    // sibling accounts on the channel must not be swept up by a channel-wide stop.
+    expect(loginWithQrStart).toHaveBeenCalledWith(expect.objectContaining({ accountId: "arnold" }));
+    expect(stopChannel).toHaveBeenCalledWith("whatsapp", "arnold");
+    expect(stopChannel).not.toHaveBeenCalledWith("whatsapp", undefined);
+  });
+
   it("keeps the legacy first-provider fallback when channel is omitted", async () => {
     const whatsappLogin = vi.fn().mockResolvedValue({ message: "whatsapp" });
     const weixinLogin = vi.fn();
     mocks.listChannelPlugins.mockReturnValue([
       {
         id: "whatsapp",
+        config: { listAccountIds: () => ["default"] },
         gatewayMethods: ["web.login.start"],
         gateway: { loginWithQrStart: whatsappLogin },
       },
       {
         id: "openclaw-weixin",
+        config: { listAccountIds: () => ["default"] },
         gatewayMethods: ["web.login.start"],
         gateway: { loginWithQrStart: weixinLogin },
       },
@@ -432,6 +467,7 @@ describe("webHandlers web.login.wait", () => {
     mocks.listChannelPlugins.mockReturnValue([
       {
         id: "whatsapp",
+        config: { listAccountIds: () => ["default"] },
         gatewayMethods: ["web.login.wait"],
         gateway: { loginWithQrWait },
       },
@@ -487,11 +523,13 @@ describe("webHandlers web.login.wait", () => {
     mocks.listChannelPlugins.mockReturnValue([
       {
         id: "whatsapp",
+        config: { listAccountIds: () => ["default"] },
         gatewayMethods: ["web.login.start", "web.login.wait"],
         gateway: { loginWithQrStart: vi.fn(), loginWithQrWait: whatsappWait },
       },
       {
         id: "openclaw-weixin",
+        config: { listAccountIds: () => ["default"] },
         gatewayMethods: ["web.login.start", "web.login.wait"],
         gateway: { loginWithQrStart: vi.fn(), loginWithQrWait: weixinWait },
       },
