@@ -94,13 +94,13 @@ describe("web QR login Gateway dispatch", () => {
     expect(whatsappStart).not.toHaveBeenCalled();
     expect(whatsappWait).not.toHaveBeenCalled();
     expect(weixinStart).toHaveBeenCalledWith({
-      accountId: "default",
+      accountId: undefined,
       force: false,
       timeoutMs: undefined,
       verbose: false,
     });
     expect(weixinWait).toHaveBeenCalledWith({
-      accountId: "default",
+      accountId: undefined,
       timeoutMs: undefined,
       sessionKey: "opaque-session",
       currentQrDataUrl: undefined,
@@ -175,7 +175,7 @@ describe("web QR login Gateway dispatch", () => {
 
     expect(globalWhatsappStart).not.toHaveBeenCalled();
     expect(scopedWeixinStart).toHaveBeenCalledWith({
-      accountId: "default",
+      accountId: undefined,
       force: false,
       timeoutMs: undefined,
       verbose: false,

@@ -117,7 +117,8 @@ function resolveWebLoginRequest<TMethod extends WebLoginGatewayMethod>(params: {
   context: GatewayRequestContext;
   gatewayMethod: TMethod;
 }): {
-  accountId: string;
+  requestedAccountId?: string;
+  lifecycleAccountId: string;
   provider: WebLoginProvider;
   run: NonNullable<WebLoginGateway[TMethod]>;
 } | null {
@@ -137,12 +138,20 @@ function resolveWebLoginRequest<TMethod extends WebLoginGatewayMethod>(params: {
     respondProviderUnsupported(params.respond, provider.id);
     return null;
   }
-  // An omitted account must resolve to one concrete account before lifecycle and login
-  // calls, so the QR pairing and the stop/restore around it address the same account.
-  const accountId =
-    resolveAccountId(params.rawParams) ??
+  // Lifecycle control needs one concrete account so an omitted one does not fan out across
+  // the channel. The plugin keeps receiving the request as sent: account ids and credential
+  // profiles are not the same namespace, and some plugins resolve an omitted account
+  // differently from a named one.
+  const requestedAccountId = resolveAccountId(params.rawParams);
+  const lifecycleAccountId =
+    requestedAccountId ??
     resolveChannelDefaultAccountId({ plugin: provider, cfg: params.context.getRuntimeConfig() });
-  return { accountId, provider, run: run.bind(gateway) as NonNullable<WebLoginGateway[TMethod]> };
+  return {
+    ...(requestedAccountId === undefined ? {} : { requestedAccountId }),
+    lifecycleAccountId,
+    provider,
+    run: run.bind(gateway) as NonNullable<WebLoginGateway[TMethod]>,
+  };
 }
 
 /** Checks whether the matching channel/account should be restored after login start. */
@@ -181,34 +190,34 @@ export const webHandlers: GatewayRequestHandlers = {
       if (!request) {
         return;
       }
-      const { accountId, provider, run } = request;
+      const { requestedAccountId, lifecycleAccountId, provider, run } = request;
       const wasRunning = wasChannelRunning({
         context,
         channelId: provider.id,
-        accountId,
+        accountId: lifecycleAccountId,
       });
       const forceLogin = Boolean(params.force);
       const stoppedBeforeLogin = forceLogin || !wasRunning;
       if (stoppedBeforeLogin) {
-        await context.stopChannel(provider.id, accountId);
+        await context.stopChannel(provider.id, lifecycleAccountId);
       }
       const result = await run({
         force: forceLogin,
         timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : undefined,
         verbose: Boolean(params.verbose),
-        accountId,
+        accountId: requestedAccountId,
       });
       const stoppedAfterQrTakeover = !stoppedBeforeLogin && Boolean(result.qrDataUrl);
       if (stoppedAfterQrTakeover) {
-        await context.stopChannel(provider.id, accountId);
+        await context.stopChannel(provider.id, lifecycleAccountId);
       }
       const stoppedForLogin = stoppedBeforeLogin || stoppedAfterQrTakeover;
       if (result.connected && stoppedForLogin) {
-        await context.startChannel(provider.id, accountId);
+        await context.startChannel(provider.id, lifecycleAccountId);
       } else if (wasRunning && stoppedForLogin && !result.qrDataUrl) {
         // When start fails before producing a QR code, restore the previously
         // running channel/account so a transient login failure does not stop it.
-        await context.startChannel(provider.id, accountId);
+        await context.startChannel(provider.id, lifecycleAccountId);
       }
       respond(true, result, undefined);
     } catch (err) {
@@ -229,16 +238,16 @@ export const webHandlers: GatewayRequestHandlers = {
       if (!request) {
         return;
       }
-      const { accountId, provider, run } = request;
+      const { requestedAccountId, lifecycleAccountId, provider, run } = request;
       const result = await run({
         timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : undefined,
-        accountId,
+        accountId: requestedAccountId,
         sessionKey: typeof params.sessionKey === "string" ? params.sessionKey : undefined,
         currentQrDataUrl:
           typeof params.currentQrDataUrl === "string" ? params.currentQrDataUrl : undefined,
       });
       if (result.connected) {
-        await context.startChannel(provider.id, accountId);
+        await context.startChannel(provider.id, lifecycleAccountId);
       }
       respond(true, result, undefined);
     } catch (err) {
