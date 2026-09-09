@@ -34,9 +34,12 @@ vi.mock("openclaw/plugin-sdk/memory-host-search", () => ({
 
 vi.mock("@openclaw/memory-core/api.js", { spy: true });
 
+vi.mock("openclaw/plugin-sdk/agent-scope-runtime", () => ({
+  resolveSessionAgentIdStrict: resolveSessionAgentIdMock,
+}));
+
 vi.mock("openclaw/plugin-sdk/memory-host-core", () => ({
   resolveDefaultAgentId: resolveDefaultAgentIdMock,
-  resolveSessionAgentId: resolveSessionAgentIdMock,
 }));
 
 vi.mock("openclaw/plugin-sdk/session-transcript-hit", async (importOriginal) => {
@@ -174,6 +177,32 @@ function createMemoryManager(overrides?: {
     probeEmbeddingAvailability: vi.fn().mockResolvedValue({ ok: true }),
     probeVectorAvailability: vi.fn().mockResolvedValue(false),
     close: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
+function createSessionSearchInput(
+  sessionPath: string,
+  sessionSnippet: string,
+): NonNullable<Parameters<typeof createMemoryManager>[0]> {
+  return {
+    searchResults: [
+      {
+        path: sessionPath,
+        startLine: 1,
+        endLine: 2,
+        score: 30,
+        snippet: sessionSnippet,
+        source: "sessions",
+      },
+      {
+        path: "MEMORY.md",
+        startLine: 5,
+        endLine: 6,
+        score: 10,
+        snippet: "durable memory",
+        source: "memory",
+      },
+    ],
   };
 }
 
@@ -1373,26 +1402,9 @@ describe("searchMemoryWiki", () => {
         },
       },
     });
-    const manager = createMemoryManager({
-      searchResults: [
-        {
-          path: "sessions/visible-session.jsonl",
-          startLine: 1,
-          endLine: 2,
-          score: 30,
-          snippet: "global transcript",
-          source: "sessions",
-        },
-        {
-          path: "MEMORY.md",
-          startLine: 5,
-          endLine: 6,
-          score: 10,
-          snippet: "durable memory",
-          source: "memory",
-        },
-      ],
-    });
+    const manager = createMemoryManager(
+      createSessionSearchInput("sessions/visible-session.jsonl", "global transcript"),
+    );
     getActiveMemorySearchManagerMock.mockResolvedValue({ manager });
 
     const results = await searchMemoryWiki({
@@ -1420,26 +1432,12 @@ describe("searchMemoryWiki", () => {
       storePath: "(test)",
       store: {},
     });
-    const manager = createMemoryManager({
-      searchResults: [
-        {
-          path: "sessions/secondary/deleted-stem.jsonl.deleted.2026-02-16T22-27-33.000Z",
-          startLine: 1,
-          endLine: 2,
-          score: 30,
-          snippet: "archived transcript",
-          source: "sessions",
-        },
-        {
-          path: "MEMORY.md",
-          startLine: 5,
-          endLine: 6,
-          score: 10,
-          snippet: "durable memory",
-          source: "memory",
-        },
-      ],
-    });
+    const manager = createMemoryManager(
+      createSessionSearchInput(
+        "sessions/secondary/deleted-stem.jsonl.deleted.2026-02-16T22-27-33.000Z",
+        "archived transcript",
+      ),
+    );
     getActiveMemorySearchManagerMock.mockResolvedValue({ manager });
 
     const results = await searchMemoryWiki({
@@ -1560,26 +1558,9 @@ describe("searchMemoryWiki", () => {
         },
       },
     });
-    const manager = createMemoryManager({
-      searchResults: [
-        {
-          path: "sessions/other/main.jsonl",
-          startLine: 1,
-          endLine: 2,
-          score: 30,
-          snippet: "other transcript",
-          source: "sessions",
-        },
-        {
-          path: "MEMORY.md",
-          startLine: 5,
-          endLine: 6,
-          score: 10,
-          snippet: "durable memory",
-          source: "memory",
-        },
-      ],
-    });
+    const manager = createMemoryManager(
+      createSessionSearchInput("sessions/other/main.jsonl", "other transcript"),
+    );
     getActiveMemorySearchManagerMock.mockResolvedValue({ manager });
 
     const results = await searchMemoryWiki({
@@ -1610,26 +1591,9 @@ describe("searchMemoryWiki", () => {
         },
       },
     });
-    const manager = createMemoryManager({
-      searchResults: [
-        {
-          path: "sessions/visible-session.jsonl",
-          startLine: 1,
-          endLine: 2,
-          score: 30,
-          snippet: "other transcript",
-          source: "sessions",
-        },
-        {
-          path: "MEMORY.md",
-          startLine: 5,
-          endLine: 6,
-          score: 10,
-          snippet: "durable memory",
-          source: "memory",
-        },
-      ],
-    });
+    const manager = createMemoryManager(
+      createSessionSearchInput("sessions/visible-session.jsonl", "other transcript"),
+    );
     getActiveMemorySearchManagerMock.mockResolvedValue({ manager });
 
     const results = await searchMemoryWiki({
@@ -1882,7 +1846,7 @@ describe("getMemoryWikiPage", () => {
       initialize: true,
     });
     await fs.writeFile(
-      path.join(rootDir, "sources", "unsafe-alpha.md"),
+      path.join(rootDir, "sources", "imported-source-alpha.md"),
       renderWikiMarkdown({
         frontmatter: {
           pageType: "source",
@@ -1902,12 +1866,12 @@ describe("getMemoryWikiPage", () => {
 
     const result = await getMemoryWikiPage({
       config,
-      lookup: "sources/unsafe-alpha.md",
+      lookup: "sources/imported-source-alpha.md",
     });
 
     expectFields(result, {
       corpus: "wiki",
-      path: "sources/unsafe-alpha.md",
+      path: "sources/imported-source-alpha.md",
       sourceType: "memory-unsafe-local",
       provenanceMode: "unsafe-local",
       sourcePath: "/tmp/private/alpha.md",

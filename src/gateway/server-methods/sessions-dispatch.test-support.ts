@@ -127,6 +127,8 @@ export function makeDispatchTestContext(
   overrides: Partial<GatewayRequestContext> = {},
 ): GatewayRequestContext {
   const workerEnvironmentService = overrides.workerEnvironmentService ?? {
+    get: () => undefined,
+    inventoryVersion: () => 0,
     supportsExecutionMode: () => true,
   };
   if (!overrides.workerEnvironmentService) {
@@ -147,6 +149,7 @@ export function makeDispatchTestContext(
     });
   }
   return {
+    getSessionEventSubscriberConnIds: () => new Set(),
     getRuntimeConfig: () => ({
       cloudWorkers: {
         profiles: {
@@ -185,7 +188,13 @@ export function makeDispatchTestContext(
 
 export async function invokeSessionDispatch(
   context: GatewayRequestContext,
-  target: { profileId?: string; machineClass?: string; deviceId?: string; autoDevice?: true } = {
+  target: {
+    profileId?: string;
+    machineClass?: string;
+    os?: string;
+    deviceId?: string;
+    autoDevice?: true;
+  } = {
     profileId: "test",
   },
   sessionMutationAuthorization?: SessionMutationAuthorization,
@@ -210,7 +219,7 @@ export async function invokeSessionMove(
     abandonSource?: true;
     target:
       | { kind: "gateway" }
-      | { kind: "profile"; profileId: string; machineClass?: string }
+      | { kind: "profile"; profileId: string; machineClass?: string; os?: string }
       | { kind: "device"; deviceId: string };
   },
   sessionMutationAuthorization?: SessionMutationAuthorization,

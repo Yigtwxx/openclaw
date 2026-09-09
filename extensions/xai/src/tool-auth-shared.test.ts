@@ -1,4 +1,5 @@
 // Xai tests cover tool auth shared plugin behavior.
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { NON_ENV_SECRETREF_MARKER } from "openclaw/plugin-sdk/provider-auth-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -6,6 +7,20 @@ import {
   resolveFallbackXaiAuth,
   resolveXaiToolApiKeyWithAuth,
 } from "./tool-auth-shared.js";
+
+function xaiWebSearchSecretRefPlugins(source: "env" | "file", provider: string, id: string) {
+  return {
+    entries: {
+      xai: {
+        config: {
+          webSearch: {
+            apiKey: { source, provider, id },
+          },
+        },
+      },
+    },
+  };
+}
 
 describe("xai tool auth helpers", () => {
   afterEach(() => {
@@ -132,25 +147,58 @@ describe("xai tool auth helpers", () => {
     await expect(
       resolveXaiToolApiKeyWithAuth({
         sourceConfig: {
-          plugins: {
-            entries: {
-              xai: {
-                config: {
-                  webSearch: {
-                    apiKey: {
-                      source: "file",
-                      provider: "vault",
-                      id: "/xai/tool-key",
-                    },
-                  },
+          plugins: xaiWebSearchSecretRefPlugins("file", "vault", "/xai/tool-key"),
+        },
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it.each(
+    [undefined, "   "].flatMap((envValue) =>
+      [
+        undefined,
+        { source: "env" as const },
+        { source: "file" as const, path: "/unused" },
+        { source: "exec" as const, command: "/unused" },
+        { source: "store" as const },
+      ].map((declaration) => ({
+        envValue,
+        declaration,
+        source: declaration?.source ?? "undeclared",
+      })),
+    ),
+  )(
+    "does not borrow profile auth for a missing configured env ref ($source, $envValue)",
+    async ({ envValue, declaration }) => {
+      vi.stubEnv("XAI_API_KEY", envValue);
+      const auth = {
+        hasAuthForProvider: vi.fn(() => true),
+        resolveApiKeyForProvider: vi.fn(async () => "profile-key"),
+      };
+      const sourceConfig: OpenClawConfig = {
+        secrets: {
+          defaults: { env: "selected" },
+          providers: declaration ? { selected: declaration } : undefined,
+        },
+        plugins: {
+          entries: {
+            xai: {
+              config: {
+                webSearch: {
+                  apiKey: { source: "env", provider: "selected", id: "XAI_API_KEY" },
                 },
               },
             },
           },
         },
-      }),
-    ).resolves.toBeUndefined();
-  });
+      };
+
+      expect(isXaiToolEnabled({ sourceConfig, auth })).toBe(false);
+      await expect(resolveXaiToolApiKeyWithAuth({ sourceConfig, auth })).resolves.toBeUndefined();
+      expect(auth.hasAuthForProvider).not.toHaveBeenCalled();
+      expect(auth.resolveApiKeyForProvider).not.toHaveBeenCalled();
+    },
+  );
 
   it("does not bypass blocked explicit tool config with auth profiles", async () => {
     const auth = {
@@ -159,21 +207,7 @@ describe("xai tool auth helpers", () => {
     };
 
     const sourceConfig = {
-      plugins: {
-        entries: {
-          xai: {
-            config: {
-              webSearch: {
-                apiKey: {
-                  source: "file",
-                  provider: "vault",
-                  id: "/xai/tool-key",
-                },
-              },
-            },
-          },
-        },
-      },
+      plugins: xaiWebSearchSecretRefPlugins("file", "vault", "/xai/tool-key"),
     };
 
     expect(isXaiToolEnabled({ sourceConfig, auth })).toBe(false);
@@ -186,21 +220,7 @@ describe("xai tool auth helpers", () => {
     await expect(
       resolveXaiToolApiKeyWithAuth({
         sourceConfig: {
-          plugins: {
-            entries: {
-              xai: {
-                config: {
-                  webSearch: {
-                    apiKey: {
-                      source: "env",
-                      provider: "default",
-                      id: "XAI_API_KEY",
-                    },
-                  },
-                },
-              },
-            },
-          },
+          plugins: xaiWebSearchSecretRefPlugins("env", "default", "XAI_API_KEY"),
         },
       }),
     ).resolves.toBe("xai-secretref-key");
@@ -212,21 +232,7 @@ describe("xai tool auth helpers", () => {
     await expect(
       resolveXaiToolApiKeyWithAuth({
         sourceConfig: {
-          plugins: {
-            entries: {
-              xai: {
-                config: {
-                  webSearch: {
-                    apiKey: {
-                      source: "env",
-                      provider: "default",
-                      id: "UNRELATED_SECRET",
-                    },
-                  },
-                },
-              },
-            },
-          },
+          plugins: xaiWebSearchSecretRefPlugins("env", "default", "UNRELATED_SECRET"),
         },
       }),
     ).resolves.toBeUndefined();
@@ -246,21 +252,7 @@ describe("xai tool auth helpers", () => {
               },
             },
           },
-          plugins: {
-            entries: {
-              xai: {
-                config: {
-                  webSearch: {
-                    apiKey: {
-                      source: "env",
-                      provider: "xai-env",
-                      id: "XAI_API_KEY",
-                    },
-                  },
-                },
-              },
-            },
-          },
+          plugins: xaiWebSearchSecretRefPlugins("env", "xai-env", "XAI_API_KEY"),
         },
       }),
     ).resolves.toBeUndefined();
@@ -280,21 +272,7 @@ describe("xai tool auth helpers", () => {
               },
             },
           },
-          plugins: {
-            entries: {
-              xai: {
-                config: {
-                  webSearch: {
-                    apiKey: {
-                      source: "env",
-                      provider: "xai-env",
-                      id: "XAI_API_KEY",
-                    },
-                  },
-                },
-              },
-            },
-          },
+          plugins: xaiWebSearchSecretRefPlugins("env", "xai-env", "XAI_API_KEY"),
         },
       }),
     ).resolves.toBeUndefined();
