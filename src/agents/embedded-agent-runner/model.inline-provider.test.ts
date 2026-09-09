@@ -2,7 +2,14 @@
 
 import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it } from "vitest";
-import { buildInlineProviderModels, resolveProviderModelInput } from "./model.inline-provider.js";
+import type { ModelDefinitionConfig } from "../../config/types.js";
+import { DEFAULT_CONTEXT_TOKENS } from "../defaults.js";
+import { SELF_HOSTED_DEFAULT_MAX_TOKENS } from "../self-hosted-provider-defaults.js";
+import {
+  buildInlineProviderModels,
+  completeInlineProviderModel,
+  resolveProviderModelInput,
+} from "./model.inline-provider.js";
 import { makeModel } from "./model.test-harness.js";
 
 describe("buildInlineProviderModels", () => {
@@ -319,6 +326,40 @@ describe("buildInlineProviderModels", () => {
     expect(expectDefined(result[0], "result[0] test invariant").headers).toEqual({
       "X-Static": "tenant-a",
     });
+  });
+});
+
+describe("completeInlineProviderModel", () => {
+  // models.providers.*.models[].maxTokens is optional in the config schema, so an
+  // authored row reaches the runtime without an output cap of its own.
+  const { maxTokens: _authoredCap, ...rowWithoutMaxTokens } = makeModel("custom-model");
+  const providerConfig = {
+    baseUrl: "http://alpha.local/v1",
+    api: "openai-completions" as const,
+    models: [rowWithoutMaxTokens as ModelDefinitionConfig],
+  };
+
+  function completeAlpha(providerMaxTokens?: number) {
+    const providers = {
+      alpha: { ...providerConfig, ...(providerMaxTokens ? { maxTokens: providerMaxTokens } : {}) },
+    };
+    return expectDefined(
+      buildInlineProviderModels(providers).map((model) =>
+        completeInlineProviderModel(model, providers.alpha),
+      )[0],
+      "completed alpha model",
+    );
+  }
+
+  it("caps output with the self-hosted output default when no row or provider sets one", () => {
+    const model = completeAlpha();
+
+    expect(model.maxTokens).toBe(SELF_HOSTED_DEFAULT_MAX_TOKENS);
+    expect(model.maxTokens).not.toBe(DEFAULT_CONTEXT_TOKENS);
+  });
+
+  it("keeps the provider-level output cap when one is configured", () => {
+    expect(completeAlpha(32_000).maxTokens).toBe(32_000);
   });
 });
 

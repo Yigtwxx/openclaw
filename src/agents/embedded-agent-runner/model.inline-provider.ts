@@ -17,6 +17,7 @@ import {
   resolveProviderRequestConfig,
   sanitizeConfiguredModelProviderRequest,
 } from "../provider-request-config.js";
+import { SELF_HOSTED_DEFAULT_MAX_TOKENS } from "../self-hosted-provider-defaults.js";
 
 /**
  * Normalizes inline `models.providers` config into runtime model entries.
@@ -226,7 +227,10 @@ export function completeInlineProviderModel(
     cost: model.cost ?? normalizeResolvedPricing({}),
     contextWindow: model.contextWindow ?? DEFAULT_CONTEXT_TOKENS,
     contextTokens: model.contextTokens,
-    maxTokens: model.maxTokens ?? DEFAULT_CONTEXT_TOKENS,
+    // maxTokens is an output cap, so it cannot fall back to the context-window
+    // default. Authored rows may omit it, and no provider accepts a whole context
+    // window as its completion budget.
+    maxTokens: model.maxTokens ?? SELF_HOSTED_DEFAULT_MAX_TOKENS,
     ...(providerConfig.authHeader !== undefined ? { authHeader: providerConfig.authHeader } : {}),
   };
 }
