@@ -14,8 +14,9 @@ import type { EmbeddedAgentMeta } from "../types.js";
 import { toNormalizedUsage, type UsageAccumulator } from "../usage-accumulator.js";
 
 /**
- * Run-level context budget. `resolved-v1` marks a window resolved from the
- * selected model or authored config; a generic default keeps legacy `resolved`.
+ * Run-level context budget. `resolved-v1` marks a window resolved for the
+ * selected model from its metadata or authored config; the generic fallback
+ * window keeps the legacy `resolved` marker.
  */
 export type OuterContextTokenMeta = {
   contextTokens?: number;
