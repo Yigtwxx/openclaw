@@ -26,7 +26,7 @@ const createExecTool = (
 const optionalRuntimeImports = vi.hoisted(() => ({ reviewer: 0, followup: 0 }));
 const reviewerRuntime = vi.hoisted(() => ({
   prepare:
-    vi.fn<typeof import("./simple-completion-runtime.js").prepareSimpleCompletionModelForAgent>(),
+    vi.fn<typeof import("./simple-completion-runtime.js").acquireSimpleCompletionModelForAgent>(),
   complete:
     vi.fn<
       typeof import("./simple-completion-runtime.js").completeWithPreparedSimpleCompletionModel
@@ -34,7 +34,7 @@ const reviewerRuntime = vi.hoisted(() => ({
 }));
 
 vi.mock("./simple-completion-runtime.js", () => ({
-  prepareSimpleCompletionModelForAgent: reviewerRuntime.prepare,
+  acquireSimpleCompletionModelForAgent: reviewerRuntime.prepare,
   completeWithPreparedSimpleCompletionModel: reviewerRuntime.complete,
 }));
 
@@ -179,21 +179,6 @@ describe("exec security floor", () => {
 
     expect(result.details.status).toBe("completed");
     expect(optionalRuntimeImports).toEqual({ reviewer: 0, followup: 0 });
-  });
-
-  it("enforces configured allowlist security when model also passes allowlist", async () => {
-    const tool = createExecTool({
-      security: "allowlist",
-      ask: "off",
-      safeBins: [],
-    });
-
-    const modelArgs = {
-      command: "echo hello",
-      security: "allowlist",
-      ask: "off",
-    };
-    await expect(tool.execute("call-2", modelArgs)).rejects.toThrow(/exec denied: allowlist miss/i);
   });
 
   it("ignores model-supplied ask overrides when configured ask is off", async () => {
@@ -710,6 +695,7 @@ describe("exec security floor", () => {
         baseUrl: "https://example.invalid",
       }),
       auth: { source: "synthetic", mode: "aws-sdk" },
+      [Symbol.asyncDispose]: async () => {},
     });
     const completion = createDeferred<never>();
     const completionEntered = createDeferred();

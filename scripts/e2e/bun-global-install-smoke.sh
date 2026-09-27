@@ -10,25 +10,11 @@ source "$ROOT_DIR/scripts/lib/docker-e2e-package.sh"
 source "$ROOT_DIR/scripts/lib/openclaw-e2e-instance.sh"
 source "$ROOT_DIR/scripts/e2e/lib/prepublish-plugin-registry.sh"
 
-read_positive_int_env() {
-  local name="${1:?missing environment variable name}"
-  local fallback="${2:?missing fallback value}"
-  local value="${!name-}"
-  if [ -z "${!name+x}" ]; then
-    value="$fallback"
-  fi
-  if [[ ! "$value" =~ ^[0-9]+$ ]] || (( 10#$value < 1 )); then
-    echo "invalid $name: $value" >&2
-    return 2
-  fi
-  printf "%s\n" "$((10#$value))"
-}
-
 BUN_BIN="${BUN_BIN:-bun}"
 HOST_BUILD="${OPENCLAW_BUN_GLOBAL_SMOKE_HOST_BUILD:-1}"
 DIST_IMAGE="${OPENCLAW_BUN_GLOBAL_SMOKE_DIST_IMAGE:-}"
 PACKAGE_TGZ="${OPENCLAW_BUN_GLOBAL_SMOKE_PACKAGE_TGZ:-}"
-COMMAND_TIMEOUT_MS="$(read_positive_int_env OPENCLAW_BUN_GLOBAL_SMOKE_TIMEOUT_MS 180000)"
+COMMAND_TIMEOUT_MS="$(docker_e2e_read_positive_int_env OPENCLAW_BUN_GLOBAL_SMOKE_TIMEOUT_MS 180000)"
 DOCKER_COMMAND_TIMEOUT="${DOCKER_COMMAND_TIMEOUT:-${OPENCLAW_BUN_GLOBAL_SMOKE_DOCKER_COMMAND_TIMEOUT:-600s}}"
 AI_PACKAGE_TGZ=""
 REGISTRY_PID=""
@@ -46,6 +32,7 @@ MOCK_REQUEST_LOG=""
 LOCAL_AGENT_LOG=""
 GATEWAY_LOG=""
 GATEWAY_HEALTH_LOG=""
+GATEWAY_STATUS_LOG=""
 GATEWAY_AGENT_LOG=""
 DIRECT_BUN_LOG=""
 
@@ -74,6 +61,7 @@ dump_debug_logs() {
     "$LOCAL_AGENT_LOG" \
     "$GATEWAY_LOG" \
     "$GATEWAY_HEALTH_LOG" \
+    "$GATEWAY_STATUS_LOG" \
     "$GATEWAY_AGENT_LOG" \
     "$DIRECT_BUN_LOG" >&2 || true
 }
@@ -305,6 +293,7 @@ NODE
   LOCAL_AGENT_LOG="$SMOKE_DIR/local-agent.log"
   GATEWAY_LOG="$SMOKE_DIR/gateway.log"
   GATEWAY_HEALTH_LOG="$SMOKE_DIR/gateway-health.json"
+  GATEWAY_STATUS_LOG="$SMOKE_DIR/gateway-status.json"
   GATEWAY_AGENT_LOG="$SMOKE_DIR/gateway-agent.log"
   DIRECT_BUN_LOG="$SMOKE_DIR/direct-bun.log"
 
@@ -386,7 +375,7 @@ NODE
     "$gateway_port"
 
   echo "==> Representative CLI state under $runtime_label"
-  run_installed_cli status --json --timeout 1 >"$CLI_STATUS_LOG" 2>&1
+  run_installed_cli status --json >"$CLI_STATUS_LOG" 2>&1
   run_installed_cli plugins list --json >"$CLI_PLUGINS_LOG" 2>&1
 
   echo "==> Local mocked agent turn under $runtime_label"
@@ -430,6 +419,13 @@ NODE
     "$success_marker" \
     "$GATEWAY_AGENT_LOG" \
     "$MOCK_REQUEST_LOG"
+  run_installed_cli gateway call status \
+    --params '{"includeChannelSummary":false}' \
+    --token "$OPENCLAW_GATEWAY_TOKEN" \
+    --json >"$GATEWAY_STATUS_LOG" 2>&1
+  node scripts/e2e/lib/bun-global-install/assertions.mjs \
+    assert-gateway-diagnostics \
+    "$GATEWAY_STATUS_LOG"
 
   echo "bun-global-install-smoke: Bun $bun_version install with $runtime_label CLI, local agent, and Gateway runtime OK"
 
@@ -439,15 +435,19 @@ NODE
       "$bun_path" \
       "$openclaw_bin" \
       "$openclaw_version" \
-      "$runtime_label" <<'NODE'
+      "$runtime_label" \
+      "$package_root" <<'NODE'
 import fs from "node:fs";
 import path from "node:path";
 
-const [, , proofPath, bunPath, openclawPath, openclawVersion, runtime] = process.argv;
+const [, , proofPath, bunPath, openclawPath, openclawVersion, runtime, installedPackageRoot] = process.argv;
+const installedPackageVersion = JSON.parse(
+  fs.readFileSync(path.join(installedPackageRoot, "package.json"), "utf8"),
+).version;
 fs.mkdirSync(path.dirname(proofPath), { recursive: true });
 fs.writeFileSync(
   proofPath,
-  `${JSON.stringify({ bunPath, openclawPath, openclawVersion, runtime }, null, 2)}\n`,
+  `${JSON.stringify({ bunPath, openclawPath, openclawVersion, runtime, installedPackageRoot, installedPackageVersion }, null, 2)}\n`,
 );
 NODE
   fi
