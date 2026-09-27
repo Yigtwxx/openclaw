@@ -716,9 +716,30 @@ describe("runEmbeddedAgent", () => {
   });
 
   it.each([
-    { name: "the resolved model window", contextWindow: 1_000_000, source: "resolved-v1" },
-    { name: "an unknown model window", contextWindow: 0, source: "resolved" },
-  ])("marks context provenance for $name", async ({ contextWindow, source }) => {
+    {
+      name: "the resolved model window",
+      contextWindow: 1_000_000,
+      authoredModelIds: [],
+      contextTokens: 1_000_000,
+      source: "resolved-v1",
+    },
+    {
+      name: "an unknown model window",
+      contextWindow: 0,
+      authoredModelIds: [],
+      contextTokens: DEFAULT_CONTEXT_TOKENS,
+      source: "resolved",
+    },
+    {
+      // Authored windows are removable config; a trusted copy would outlive them.
+      name: "an authored config window",
+      contextWindow: 1_000_000,
+      authoredModelIds: ["wide-model"],
+      contextTokens: 16_000,
+      source: "resolved",
+    },
+  ])("marks context provenance for $name", async (testCase) => {
+    const { contextWindow, authoredModelIds, contextTokens, source } = testCase;
     const sessionFile = nextSessionCompatibilityKey();
     resolveModelAsyncMock.mockImplementation(async (provider: string, modelId: string) => {
       const resolved = createResolvedEmbeddedRunnerModel(provider, modelId);
@@ -730,7 +751,7 @@ describe("runEmbeddedAgent", () => {
       sessionId: "context-provenance",
       sessionFile,
       workspaceDir,
-      config: createEmbeddedAgentRunnerOpenAiConfig([]),
+      config: createEmbeddedAgentRunnerOpenAiConfig(authoredModelIds),
       prompt: "hello",
       provider: "openai",
       model: "wide-model",
@@ -740,10 +761,7 @@ describe("runEmbeddedAgent", () => {
       enqueue: immediateEnqueue,
     });
 
-    expect(result.meta.agentMeta).toMatchObject({
-      contextTokens: contextWindow || DEFAULT_CONTEXT_TOKENS,
-      contextTokensSource: source,
-    });
+    expect(result.meta.agentMeta).toMatchObject({ contextTokens, contextTokensSource: source });
   });
 
   it("resolves transport-owned OpenAI Codex runs against the runtime provider first", async () => {

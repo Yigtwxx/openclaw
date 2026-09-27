@@ -9,6 +9,7 @@ import { createUsageAccumulator, mergeUsageIntoAccumulator } from "../usage-accu
 import {
   buildUsageAgentMetaFields,
   buildErrorAgentMeta,
+  buildOuterContextTokenMeta,
   resolveEmbeddedAttemptBasePrompt,
   resolveFinalAssistantRawText,
   resolveFinalAssistantVisibleText,
@@ -281,6 +282,24 @@ describe("buildUsageAgentMetaFields", () => {
     expect(fields.usage?.input).toBe(497_720);
     expect(fields.lastCallUsage).toBeUndefined();
     expect(fields.promptTokens).toBeUndefined();
+  });
+});
+
+describe("buildOuterContextTokenMeta", () => {
+  it("trusts only uncapped model-owned windows", () => {
+    expect(buildOuterContextTokenMeta(1_000_000, { source: "model" })).toEqual({
+      contextTokens: 1_000_000,
+      contextTokensSource: "resolved-v1",
+    });
+    for (const info of [
+      { source: "modelsConfig" as const },
+      { source: "default" as const },
+      { source: "model" as const, referenceTokens: 1_000_000 },
+      undefined,
+    ]) {
+      expect(buildOuterContextTokenMeta(64_000, info)).toEqual({ contextTokens: 64_000 });
+    }
+    expect(buildOuterContextTokenMeta(undefined, { source: "model" })).toEqual({});
   });
 });
 

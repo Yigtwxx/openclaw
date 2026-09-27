@@ -14,9 +14,11 @@ import type { EmbeddedAgentMeta } from "../types.js";
 import { toNormalizedUsage, type UsageAccumulator } from "../usage-accumulator.js";
 
 /**
- * Run-level context budget. `resolved-v1` marks a window resolved for the
- * selected model from its metadata or authored config; the generic fallback
- * window keeps the legacy `resolved` marker.
+ * Run-level context budget. `resolved-v1` marks a window owned by the selected
+ * model's own metadata, which cold session projection may reuse for the same
+ * producer tuple. Authored config windows, caller budget caps, and the generic
+ * fallback keep the legacy `resolved` marker: an operator can remove that
+ * config, and a persisted copy must not outlive it.
  */
 export type OuterContextTokenMeta = {
   contextTokens?: number;
@@ -25,12 +27,13 @@ export type OuterContextTokenMeta = {
 
 export function buildOuterContextTokenMeta(
   contextTokenBudget: number | undefined,
-  contextWindowInfo: Pick<ContextWindowInfo, "source"> | undefined,
+  contextWindowInfo: Pick<ContextWindowInfo, "source" | "referenceTokens"> | undefined,
 ): OuterContextTokenMeta {
   if (contextTokenBudget === undefined) {
     return {};
   }
-  return contextWindowInfo && contextWindowInfo.source !== "default"
+  // referenceTokens is set only when a caller budget capped the model window.
+  return contextWindowInfo?.source === "model" && contextWindowInfo.referenceTokens === undefined
     ? { contextTokens: contextTokenBudget, contextTokensSource: "resolved-v1" }
     : { contextTokens: contextTokenBudget };
 }
