@@ -7,6 +7,8 @@ import {
   errorShape,
   validateWebLoginStartParams,
   validateWebLoginWaitParams,
+  type WebLoginStartParams,
+  type WebLoginWaitParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { resolveChannelDefaultAccountId } from "../../channels/plugins/helpers.js";
 import { listChannelPlugins, normalizeChannelId } from "../../channels/plugins/index.js";
@@ -65,10 +67,6 @@ type WebLoginProvider = NonNullable<ReturnType<typeof resolveWebLoginProvider>>;
 type WebLoginGateway = NonNullable<WebLoginProvider["gateway"]>;
 type WebLoginGatewayMethod = "loginWithQrStart" | "loginWithQrWait";
 
-function resolveAccountId(params: Record<string, unknown>): string | undefined {
-  return typeof params.accountId === "string" ? params.accountId : undefined;
-}
-
 function resolveMissingWebLoginPluginHint(context: GatewayRequestContext): string | null {
   const cfg = context.getRuntimeConfig();
   const channels = cfg.channels;
@@ -112,7 +110,7 @@ function respondProviderUnsupported(respond: RespondFn, providerId: string) {
 
 /** Resolves a concrete provider gateway login method or sends the public error. */
 function resolveWebLoginRequest<TMethod extends WebLoginGatewayMethod>(params: {
-  rawParams: Record<string, unknown>;
+  rawParams: WebLoginStartParams | WebLoginWaitParams;
   respond: RespondFn;
   context: GatewayRequestContext;
   gatewayMethod: TMethod;
@@ -122,9 +120,7 @@ function resolveWebLoginRequest<TMethod extends WebLoginGatewayMethod>(params: {
   provider: WebLoginProvider;
   run: NonNullable<WebLoginGateway[TMethod]>;
 } | null {
-  const provider = resolveWebLoginProvider(
-    typeof params.rawParams.channel === "string" ? params.rawParams.channel : undefined,
-  );
+  const provider = resolveWebLoginProvider(params.rawParams.channel);
   if (!provider) {
     respondProviderUnavailable({
       respond: params.respond,
@@ -142,7 +138,7 @@ function resolveWebLoginRequest<TMethod extends WebLoginGatewayMethod>(params: {
   // the channel. The plugin keeps receiving the request as sent: account ids and credential
   // profiles are not the same namespace, and some plugins resolve an omitted account
   // differently from a named one.
-  const requestedAccountId = resolveAccountId(params.rawParams);
+  const requestedAccountId = params.rawParams.accountId;
   const lifecycleAccountId =
     requestedAccountId ??
     resolveChannelDefaultAccountId({ plugin: provider, cfg: params.context.getRuntimeConfig() });
@@ -203,7 +199,7 @@ export const webHandlers: GatewayRequestHandlers = {
       }
       const result = await run({
         force: forceLogin,
-        timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : undefined,
+        timeoutMs: params.timeoutMs,
         verbose: Boolean(params.verbose),
         accountId: requestedAccountId,
       });
@@ -240,11 +236,10 @@ export const webHandlers: GatewayRequestHandlers = {
       }
       const { requestedAccountId, lifecycleAccountId, provider, run } = request;
       const result = await run({
-        timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : undefined,
+        timeoutMs: params.timeoutMs,
         accountId: requestedAccountId,
-        sessionKey: typeof params.sessionKey === "string" ? params.sessionKey : undefined,
-        currentQrDataUrl:
-          typeof params.currentQrDataUrl === "string" ? params.currentQrDataUrl : undefined,
+        sessionKey: params.sessionKey,
+        currentQrDataUrl: params.currentQrDataUrl,
       });
       if (result.connected) {
         await context.startChannel(provider.id, lifecycleAccountId);
