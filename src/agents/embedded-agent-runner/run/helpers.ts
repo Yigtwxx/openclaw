@@ -1,6 +1,7 @@
 import { generateSecureToken } from "../../../infra/secure-random.js";
 import type { AssistantMessage } from "../../../llm/types.js";
 import { extractAssistantTextForPhase } from "../../../shared/chat-message-content.js";
+import type { ContextWindowInfo } from "../../context-window-guard.js";
 import { extractAssistantVisibleText } from "../../embedded-agent-utils.js";
 import {
   deriveContextPromptTokens,
@@ -11,6 +12,27 @@ import {
 } from "../../usage.js";
 import type { EmbeddedAgentMeta } from "../types.js";
 import { toNormalizedUsage, type UsageAccumulator } from "../usage-accumulator.js";
+
+/**
+ * Run-level context budget. `resolved-v1` marks a window resolved from the
+ * selected model or authored config; a generic default keeps legacy `resolved`.
+ */
+export type OuterContextTokenMeta = {
+  contextTokens?: number;
+  contextTokensSource?: "resolved-v1";
+};
+
+export function buildOuterContextTokenMeta(
+  contextTokenBudget: number | undefined,
+  contextWindowInfo: Pick<ContextWindowInfo, "source"> | undefined,
+): OuterContextTokenMeta {
+  if (contextTokenBudget === undefined) {
+    return {};
+  }
+  return contextWindowInfo && contextWindowInfo.source !== "default"
+    ? { contextTokens: contextTokenBudget, contextTokensSource: "resolved-v1" }
+    : { contextTokens: contextTokenBudget };
+}
 
 export type RuntimeAuthState = {
   generation: number;
@@ -159,6 +181,7 @@ export function buildErrorAgentMeta(params: {
   model: string;
   credentialSource?: EmbeddedAgentMeta["credentialSource"];
   contextTokens?: number;
+  contextTokensSource?: OuterContextTokenMeta["contextTokensSource"];
   usageAccumulator: UsageAccumulator;
   lastRunPromptUsage: NormalizedUsage | undefined;
   currentAttemptAssistant?: { api?: string; usage?: unknown } | null;
@@ -175,7 +198,9 @@ export function buildErrorAgentMeta(params: {
     model: params.model,
     ...(params.credentialSource ? { credentialSource: params.credentialSource } : {}),
     ...(params.contextTokens ? { contextTokens: params.contextTokens } : {}),
-    ...(params.contextTokens ? { contextTokensSource: "resolved" as const } : {}),
+    ...(params.contextTokens
+      ? { contextTokensSource: params.contextTokensSource ?? ("resolved" as const) }
+      : {}),
     ...(usageMeta.usage ? { usage: usageMeta.usage } : {}),
     ...(usageMeta.lastCallUsage ? { lastCallUsage: usageMeta.lastCallUsage } : {}),
     ...(usageMeta.promptTokens ? { promptTokens: usageMeta.promptTokens } : {}),

@@ -4,6 +4,7 @@ import "./test-helpers/fast-coding-tools.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { wrapRunWithTestPreparedAdmission } from "./admitted-run-context.test-support.js";
+import { DEFAULT_CONTEXT_TOKENS } from "./defaults.js";
 import { resolveEmbeddedAuthCooldownProbePolicy as resolveEmbeddedAuthCooldownProbePolicyActual } from "./embedded-agent-runner/run/auth-controller.js";
 import {
   buildEmbeddedRunnerAssistant,
@@ -712,6 +713,37 @@ describe("runEmbeddedAgent", () => {
     expect(
       (firstRunEmbeddedAttemptParams() as { model?: { provider?: string } }).model?.provider,
     ).toBe("openai");
+  });
+
+  it.each([
+    { name: "the resolved model window", contextWindow: 1_000_000, source: "resolved-v1" },
+    { name: "an unknown model window", contextWindow: 0, source: "resolved" },
+  ])("marks context provenance for $name", async ({ contextWindow, source }) => {
+    const sessionFile = nextSessionCompatibilityKey();
+    resolveModelAsyncMock.mockImplementation(async (provider: string, modelId: string) => {
+      const resolved = createResolvedEmbeddedRunnerModel(provider, modelId);
+      return { ...resolved, model: { ...resolved.model, contextWindow } };
+    });
+    mockSuccessfulEmbeddedAttempt();
+
+    const result = await runEmbeddedAgent({
+      sessionId: "context-provenance",
+      sessionFile,
+      workspaceDir,
+      config: createEmbeddedAgentRunnerOpenAiConfig([]),
+      prompt: "hello",
+      provider: "openai",
+      model: "wide-model",
+      timeoutMs: 5_000,
+      agentDir,
+      runId: nextRunId("context-provenance"),
+      enqueue: immediateEnqueue,
+    });
+
+    expect(result.meta.agentMeta).toMatchObject({
+      contextTokens: contextWindow || DEFAULT_CONTEXT_TOKENS,
+      contextTokensSource: source,
+    });
   });
 
   it("resolves transport-owned OpenAI Codex runs against the runtime provider first", async () => {
