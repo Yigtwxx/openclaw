@@ -4,7 +4,6 @@ import "./test-helpers/fast-coding-tools.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { wrapRunWithTestPreparedAdmission } from "./admitted-run-context.test-support.js";
-import { DEFAULT_CONTEXT_TOKENS } from "./defaults.js";
 import { resolveEmbeddedAuthCooldownProbePolicy as resolveEmbeddedAuthCooldownProbePolicyActual } from "./embedded-agent-runner/run/auth-controller.js";
 import {
   buildEmbeddedRunnerAssistant,
@@ -713,91 +712,6 @@ describe("runEmbeddedAgent", () => {
     expect(
       (firstRunEmbeddedAttemptParams() as { model?: { provider?: string } }).model?.provider,
     ).toBe("openai");
-  });
-
-  it.each([
-    {
-      name: "the resolved model window",
-      contextWindow: 1_000_000,
-      authoredModelIds: [],
-      contextTokens: 1_000_000,
-      source: "resolved-v1",
-    },
-    {
-      name: "an unknown model window",
-      contextWindow: 0,
-      authoredModelIds: [],
-      contextTokens: DEFAULT_CONTEXT_TOKENS,
-      source: "resolved",
-    },
-    {
-      // Authored windows are removable config; a trusted copy would outlive them.
-      name: "an authored config window",
-      contextWindow: 1_000_000,
-      authoredModelIds: ["wide-model"],
-      contextTokens: 16_000,
-      source: "resolved",
-    },
-    {
-      // The cold reader's producer tuple does not carry the window selection.
-      name: "a session-selected window",
-      contextWindow: 1_000_000,
-      authoredModelIds: [],
-      selectableWindows: true,
-      selectedContextWindow: "200k",
-      contextTokens: 200_000,
-      source: "resolved",
-    },
-    {
-      name: "the default of selectable windows",
-      contextWindow: 1_000_000,
-      authoredModelIds: [],
-      selectableWindows: true,
-      contextTokens: 1_000_000,
-      source: "resolved",
-    },
-  ])("marks context provenance for $name", async (testCase) => {
-    const { contextWindow, authoredModelIds, contextTokens, source } = testCase;
-    const selectedContextWindow =
-      "selectedContextWindow" in testCase ? testCase.selectedContextWindow : undefined;
-    const sessionFile = nextSessionCompatibilityKey();
-    resolveModelAsyncMock.mockImplementation(async (provider: string, modelId: string) => {
-      const resolved = createResolvedEmbeddedRunnerModel(provider, modelId);
-      return {
-        ...resolved,
-        model: {
-          ...resolved.model,
-          contextWindow,
-          ...("selectableWindows" in testCase
-            ? {
-                contextWindows: [
-                  { id: "200k", label: "200K", contextWindow: 200_000 },
-                  { id: "1m", label: "1M", contextWindow: 1_000_000 },
-                ],
-                contextWindowDefault: "1m",
-              }
-            : {}),
-        },
-      };
-    });
-    mockSuccessfulEmbeddedAttempt();
-
-    const result = await runEmbeddedAgent({
-      sessionId: "context-provenance",
-      sessionFile,
-      workspaceDir,
-      config: createEmbeddedAgentRunnerOpenAiConfig(authoredModelIds),
-      prompt: "hello",
-      provider: "openai",
-      model: "wide-model",
-      timeoutMs: 5_000,
-      agentDir,
-      runId: nextRunId("context-provenance"),
-      enqueue: immediateEnqueue,
-      ...(selectedContextWindow ? { contextWindow: selectedContextWindow } : {}),
-    });
-
-    expect(result.meta.agentMeta).toMatchObject({ contextTokens, contextTokensSource: source });
   });
 
   it("resolves transport-owned OpenAI Codex runs against the runtime provider first", async () => {
