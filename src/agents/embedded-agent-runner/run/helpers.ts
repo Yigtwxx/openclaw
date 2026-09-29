@@ -1,5 +1,6 @@
 import { generateSecureToken } from "../../../infra/secure-random.js";
 import type { AssistantMessage } from "../../../llm/types.js";
+import type { ProviderRuntimeModel } from "../../../plugins/provider-runtime-model.types.js";
 import { extractAssistantTextForPhase } from "../../../shared/chat-message-content.js";
 import type { ContextWindowInfo } from "../../context-window-guard.js";
 import { extractAssistantVisibleText } from "../../embedded-agent-utils.js";
@@ -18,7 +19,9 @@ import { toNormalizedUsage, type UsageAccumulator } from "../usage-accumulator.j
  * model's own metadata, which cold session projection may reuse for the same
  * producer tuple. Authored config windows, caller budget caps, and the generic
  * fallback keep the legacy `resolved` marker: an operator can remove that
- * config, and a persisted copy must not outlive it.
+ * config, and a persisted copy must not outlive it. Windows of a model that
+ * declares selectable options stay `resolved` too: they follow the session's
+ * window selection, which the producer tuple does not carry.
  */
 export type OuterContextTokenMeta = {
   contextTokens?: number;
@@ -28,12 +31,15 @@ export type OuterContextTokenMeta = {
 export function buildOuterContextTokenMeta(
   contextTokenBudget: number | undefined,
   contextWindowInfo: Pick<ContextWindowInfo, "source" | "referenceTokens"> | undefined,
+  runtimeModel: Pick<ProviderRuntimeModel, "contextWindows">,
 ): OuterContextTokenMeta {
   if (contextTokenBudget === undefined) {
     return {};
   }
   // referenceTokens is set only when a caller budget capped the model window.
-  return contextWindowInfo?.source === "model" && contextWindowInfo.referenceTokens === undefined
+  return contextWindowInfo?.source === "model" &&
+    contextWindowInfo.referenceTokens === undefined &&
+    !runtimeModel.contextWindows?.length
     ? { contextTokens: contextTokenBudget, contextTokensSource: "resolved-v1" }
     : { contextTokens: contextTokenBudget };
 }

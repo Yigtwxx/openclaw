@@ -738,12 +738,47 @@ describe("runEmbeddedAgent", () => {
       contextTokens: 16_000,
       source: "resolved",
     },
+    {
+      // The cold reader's producer tuple does not carry the window selection.
+      name: "a session-selected window",
+      contextWindow: 1_000_000,
+      authoredModelIds: [],
+      selectableWindows: true,
+      selectedContextWindow: "200k",
+      contextTokens: 200_000,
+      source: "resolved",
+    },
+    {
+      name: "the default of selectable windows",
+      contextWindow: 1_000_000,
+      authoredModelIds: [],
+      selectableWindows: true,
+      contextTokens: 1_000_000,
+      source: "resolved",
+    },
   ])("marks context provenance for $name", async (testCase) => {
     const { contextWindow, authoredModelIds, contextTokens, source } = testCase;
+    const selectedContextWindow =
+      "selectedContextWindow" in testCase ? testCase.selectedContextWindow : undefined;
     const sessionFile = nextSessionCompatibilityKey();
     resolveModelAsyncMock.mockImplementation(async (provider: string, modelId: string) => {
       const resolved = createResolvedEmbeddedRunnerModel(provider, modelId);
-      return { ...resolved, model: { ...resolved.model, contextWindow } };
+      return {
+        ...resolved,
+        model: {
+          ...resolved.model,
+          contextWindow,
+          ...("selectableWindows" in testCase
+            ? {
+                contextWindows: [
+                  { id: "200k", label: "200K", contextWindow: 200_000 },
+                  { id: "1m", label: "1M", contextWindow: 1_000_000 },
+                ],
+                contextWindowDefault: "1m",
+              }
+            : {}),
+        },
+      };
     });
     mockSuccessfulEmbeddedAttempt();
 
@@ -759,6 +794,7 @@ describe("runEmbeddedAgent", () => {
       agentDir,
       runId: nextRunId("context-provenance"),
       enqueue: immediateEnqueue,
+      ...(selectedContextWindow ? { contextWindow: selectedContextWindow } : {}),
     });
 
     expect(result.meta.agentMeta).toMatchObject({ contextTokens, contextTokensSource: source });
