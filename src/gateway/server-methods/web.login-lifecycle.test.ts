@@ -22,15 +22,53 @@ import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-c
 import type { GatewayRequestHandlerOptions } from "./types.js";
 import { webHandlers } from "./web.js";
 
-const ACCOUNTS = ["arnold", "enzo", "valentina"];
+// The default account: an account-less login pairs this one.
+const PAIRED_ACCOUNT = "arnold";
+const ACCOUNTS = [PAIRED_ACCOUNT, "enzo", "valentina"];
+
+type ListenerTransition = "started" | "stopped";
+
+/** Live account listeners plus one-shot signals for their next start or stop. */
+function createListenerLog() {
+  const live = new Set<string>();
+  const waiters = new Map<string, Array<() => void>>();
+  const signal = (transition: ListenerTransition, accountId: string) => {
+    const key = `${transition}:${accountId}`;
+    const pending = waiters.get(key) ?? [];
+    waiters.delete(key);
+    for (const resolve of pending) {
+      resolve();
+    }
+  };
+  return {
+    live: () => [...live].toSorted(),
+    started(accountId: string) {
+      live.add(accountId);
+      signal("started", accountId);
+    },
+    stopped(accountId: string) {
+      live.delete(accountId);
+      signal("stopped", accountId);
+    },
+    // Register before triggering the transition: the listener may settle in the same tick.
+    next(transition: ListenerTransition, accountId: string): Promise<void> {
+      return new Promise((resolve) => {
+        const key = `${transition}:${accountId}`;
+        waiters.set(key, [...(waiters.get(key) ?? []), resolve]);
+      });
+    },
+  };
+}
+
+type ListenerLog = ReturnType<typeof createListenerLog>;
 
 function createQrLoginPlugin(params: {
-  liveListeners: Set<string>;
+  listeners: ListenerLog;
   pluginAccountIds: Array<string | undefined>;
   connected: boolean;
 }): ChannelPlugin {
   const describeAccount = (_cfg: unknown, accountId?: string) => ({
-    accountId: accountId ?? ACCOUNTS[0],
+    accountId: accountId ?? PAIRED_ACCOUNT,
     enabled: true,
     configured: true,
   });
@@ -56,7 +94,7 @@ function createQrLoginPlugin(params: {
       // Stands in for the channel transport only: the listener stays alive until the
       // lifecycle owner aborts it, which is what a real account listener does.
       startAccount: async (ctx: { accountId: string; abortSignal: AbortSignal }) => {
-        params.liveListeners.add(ctx.accountId);
+        params.listeners.started(ctx.accountId);
         await new Promise<void>((resolve) => {
           if (ctx.abortSignal.aborted) {
             resolve();
@@ -64,7 +102,7 @@ function createQrLoginPlugin(params: {
           }
           ctx.abortSignal.addEventListener("abort", () => resolve(), { once: true });
         });
-        params.liveListeners.delete(ctx.accountId);
+        params.listeners.stopped(ctx.accountId);
       },
       loginWithQrStart: async (login: { accountId?: string }) => {
         params.pluginAccountIds.push(login.accountId);
@@ -83,9 +121,9 @@ function createQrLoginPlugin(params: {
 
 async function runAccountLessPairing(connected: boolean) {
   const { createChannelManager } = await import("../server-channels.js");
-  const liveListeners = new Set<string>();
+  const listeners = createListenerLog();
   const pluginAccountIds: Array<string | undefined> = [];
-  const plugin = createQrLoginPlugin({ liveListeners, pluginAccountIds, connected });
+  const plugin = createQrLoginPlugin({ listeners, pluginAccountIds, connected });
 
   const registry = createEmptyPluginRegistry();
   registry.channels.push({ pluginId: plugin.id, source: "test", plugin });
@@ -121,23 +159,23 @@ async function runAccountLessPairing(connected: boolean) {
       },
     }) as unknown as GatewayRequestHandlerOptions;
 
-  const settle = () =>
-    new Promise<void>((resolve) => {
-      setTimeout(resolve, 60);
-    });
-  const live = () => [...liveListeners].toSorted();
-
+  const startup = Promise.all(ACCOUNTS.map((id) => listeners.next("started", id)));
   await manager.startChannel("whatsapp" as ChannelId);
-  await settle();
-  const afterStartup = live();
+  await startup;
+  const afterStartup = listeners.live();
 
+  // The handler awaits the stop, and the stop awaits the listener's exit.
+  const paused = listeners.next("stopped", PAIRED_ACCOUNT);
   await webHandlers["web.login.start"]?.(options("web.login.start"));
-  await settle();
-  const duringPairing = live();
+  await paused;
+  const duringPairing = listeners.live();
 
+  const restored = listeners.next("started", PAIRED_ACCOUNT);
   await webHandlers["web.login.wait"]?.(options("web.login.wait"));
-  await settle();
-  const afterPairing = live();
+  if (connected) {
+    await restored;
+  }
+  const afterPairing = listeners.live();
 
   await manager.stopChannel("whatsapp" as ChannelId);
   return { afterStartup, duringPairing, afterPairing, pluginAccountIds };
