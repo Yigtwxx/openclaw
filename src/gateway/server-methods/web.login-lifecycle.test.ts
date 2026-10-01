@@ -18,6 +18,7 @@ import {
   setActivePluginRegistry,
 } from "../../plugins/runtime.js";
 import type { RuntimeEnv } from "../../runtime.js";
+import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 import { webHandlers } from "./web.js";
 
@@ -100,6 +101,7 @@ async function runAccountLessPairing(connected: boolean) {
       ChannelId,
       RuntimeEnv
     >,
+    scheduler: createTestGatewayScheduler(),
   });
 
   const options = (method: "web.login.start" | "web.login.wait") =>
