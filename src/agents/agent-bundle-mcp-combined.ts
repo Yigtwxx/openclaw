@@ -1,6 +1,7 @@
 /** Combined session MCP runtime facade for server and requester partitions. */
 import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { runTasksWithConcurrency } from "../utils/run-with-concurrency.js";
+import { compareMcpCatalogTools } from "./agent-bundle-mcp-names.js";
 import { getSessionMcpRequestSignal } from "./agent-bundle-mcp-request-context.js";
 import type {
   McpCatalogTool,
@@ -9,14 +10,7 @@ import type {
   McpToolCatalogDiagnostic,
   SessionMcpRuntime,
 } from "./agent-bundle-mcp-types.js";
-
-function compareCatalogTools(left: McpCatalogTool, right: McpCatalogTool): number {
-  return (
-    left.safeServerName.localeCompare(right.safeServerName) ||
-    left.toolName.localeCompare(right.toolName) ||
-    left.serverName.localeCompare(right.serverName)
-  );
-}
+import { recordAgentCleanupFailure } from "./run-cleanup-timeout.js";
 
 async function loadCurrentCatalog(part: SessionMcpRuntime): Promise<McpToolCatalog> {
   if (part.retiredCatalog) {
@@ -63,9 +57,9 @@ export function mergeMcpToolCatalogs(catalogs: readonly McpToolCatalog[]): McpTo
       diagnostics.push(...catalog.diagnostics);
     }
   }
-  tools.sort(compareCatalogTools);
-  policyTools.sort(compareCatalogTools);
-  sessionDeniedTools.sort(compareCatalogTools);
+  tools.sort(compareMcpCatalogTools);
+  policyTools.sort(compareMcpCatalogTools);
+  sessionDeniedTools.sort(compareMcpCatalogTools);
   return {
     version: 1,
     generatedAt: Math.max(0, ...catalogs.map((catalog) => catalog.generatedAt)),
@@ -91,6 +85,8 @@ export function createCombinedSessionMcpRuntime(params: {
   const parts = params.parts;
   // Empty partitions still own run/view leases; populated ones carry reused server leases.
   let activeLeases = 0;
+  let disposal: Promise<void> | undefined;
+  let cleanupFailure: PromiseRejectedResult | undefined;
   let lastUsedAt = Math.max(Date.now(), ...parts.map((part) => part.lastUsedAt));
   let cachedCatalog: McpToolCatalog | null = null;
   let mergedSourceCatalogs: ReadonlyArray<McpToolCatalog> | null = null;
@@ -291,8 +287,34 @@ export function createCombinedSessionMcpRuntime(params: {
       }
       return await owner.getPrompt(serverName, name, args);
     },
+    async joinCleanup() {
+      await disposal;
+      const outcomes = await Promise.allSettled(
+        parts.map(async (part) => {
+          if (!part.joinCleanup) {
+            throw new Error("MCP runtime does not expose cleanup ownership");
+          }
+          await part.joinCleanup();
+        }),
+      );
+      cleanupFailure ??= outcomes.find((outcome) => outcome.status === "rejected");
+      if (cleanupFailure) {
+        recordAgentCleanupFailure();
+        throw cleanupFailure.reason;
+      }
+    },
     async dispose() {
-      await Promise.allSettled(parts.map((part) => part.dispose()));
+      // SDK parts may throw without retaining their own failure. The facade owns
+      // that result across callers while Gateway disposal stays best effort.
+      disposal ??= Promise.allSettled(parts.map(async (part) => await part.dispose())).then(
+        (outcomes) => {
+          cleanupFailure ??= outcomes.find((outcome) => outcome.status === "rejected");
+        },
+      );
+      await disposal;
+      if (cleanupFailure) {
+        recordAgentCleanupFailure();
+      }
     },
   };
 }

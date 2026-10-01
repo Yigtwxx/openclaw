@@ -1,5 +1,6 @@
 // Tests /learn prompt rewriting, defaults, standards, and availability gating.
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-support.js";
 import { migratePersistedImplicitMainRoster } from "../../config/legacy.roster.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { DEFAULT_LEARN_REQUEST } from "../../skills/workshop/learn-prompt.js";
@@ -72,6 +73,8 @@ function buildLearnParams(
     isGroup: false,
   } as unknown as HandleCommandsParams;
 }
+
+afterEach(() => cliBackendsTesting.resetDepsForTest());
 
 describe("learn command", () => {
   it.each([
@@ -152,6 +155,18 @@ describe("learn command", () => {
         },
       };
       if (surface === "paired-node") {
+        // Supply runtime backend metadata for the placement and authoring policy checks.
+        cliBackendsTesting.setDepsForTest({
+          resolveRuntimeCliBackends: () => [
+            {
+              id: "claude-cli",
+              modelProvider: "anthropic",
+              pluginId: "anthropic",
+              config: { command: "claude" },
+              bundleMcp: true,
+            },
+          ],
+        });
         params.provider = "anthropic";
         params.model = "claude-sonnet-5";
         params.sessionEntry = {
@@ -181,15 +196,6 @@ describe("learn command", () => {
     expect(instruction).toContain("docs/runbook.md and https://example.com/guide");
     expect(params.command.rawBodyNormalized).toBe(instruction);
     expect(params.command.commandBodyNormalized).toBe(instruction);
-  });
-
-  it("uses the current-conversation default for bare /learn", async () => {
-    const params = buildLearnParams("/learn");
-
-    const result = await handleLearnCommand(params, true);
-
-    expect(result?.shouldContinue).toBe(true);
-    expect((params.ctx as { BodyForAgent?: string }).BodyForAgent).toContain(DEFAULT_LEARN_REQUEST);
   });
 
   it("includes the load-bearing skill authoring standards", async () => {

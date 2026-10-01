@@ -1,85 +1,9 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import { removePathWithinRoot } from "../../infra/fs-safe-remove.js";
-import { pathExists, root } from "../../infra/fs-safe.js";
+import { pathExists } from "../../infra/fs-safe.js";
 import { logWarn } from "../../logger.js";
-import {
-  restoreWorkspaceSkillMutation,
-  type PreparedWorkspaceSkillMutation,
-} from "../lifecycle/workspace-skill-write.js";
-
-export async function rollbackSkillCollectionMutation(params: {
-  skillsRoot: string;
-  appliedWrites: readonly PreparedWorkspaceSkillMutation[];
-  droppedSkills: readonly { skillKey: string; baseDir: string; stagedDir: string }[];
-}): Promise<void> {
-  const errors: unknown[] = [];
-  for (const mutation of params.appliedWrites.toReversed()) {
-    try {
-      await restoreWorkspaceSkillMutation(mutation);
-      if (mutation.mode === "create") {
-        await fs.rmdir(mutation.skillDir).catch((error: unknown) => {
-          const code = asNullableRecord(error)?.code;
-          if (code !== "ENOENT" && code !== "ENOTEMPTY" && code !== "EEXIST") {
-            throw error;
-          }
-        });
-      }
-    } catch (error) {
-      errors.push(error);
-    }
-  }
-  const skillsRootHandle = await root(params.skillsRoot);
-  for (const skill of params.droppedSkills.toReversed()) {
-    try {
-      const baseRelativePath = relativeSkillCollectionPath(params.skillsRoot, skill.baseDir);
-      if (await skillsRootHandle.exists(baseRelativePath)) {
-        throw new Error(`Dropped skill changed before restoration: ${skill.skillKey}`);
-      }
-      await skillsRootHandle.move(
-        relativeSkillCollectionPath(params.skillsRoot, skill.stagedDir),
-        baseRelativePath,
-        { overwrite: true },
-      );
-    } catch (error) {
-      errors.push(error);
-    }
-  }
-  if (errors.length > 0) {
-    throw new AggregateError(errors, "Failed to restore the previous skill collection.");
-  }
-}
-
-export async function stageSkillCollectionDrop(params: {
-  skillsRoot: string;
-  skillKey: string;
-  baseDir: string;
-}): Promise<{ skillKey: string; baseDir: string; stagedDir: string }> {
-  const stagedDir = path.join(
-    path.dirname(params.baseDir),
-    `.openclaw-drop-${path.basename(params.baseDir)}-${randomUUID()}`,
-  );
-  const skillsRootHandle = await root(params.skillsRoot);
-  await skillsRootHandle.move(
-    relativeSkillCollectionPath(params.skillsRoot, params.baseDir),
-    relativeSkillCollectionPath(params.skillsRoot, stagedDir),
-    { overwrite: true },
-  );
-  return { skillKey: params.skillKey, baseDir: params.baseDir, stagedDir };
-}
-
-export async function discardStagedSkillCollectionDrops(
-  skillsRoot: string,
-  droppedSkills: readonly { stagedDir: string }[],
-): Promise<void> {
-  for (const skill of droppedSkills) {
-    await removeSkillCollectionDirectory(skillsRoot, skill.stagedDir).catch((error: unknown) => {
-      logWarn(`skill-workshop: failed to discard staged skill drop: ${String(error)}`);
-    });
-  }
-}
 
 export async function restoreSkillCollectionBackupTransaction(params: {
   skillsRoot: string;
@@ -130,12 +54,9 @@ export async function restoreSkillCollectionBackupTransaction(params: {
   }
 }
 
-async function restoreSkillCollectionBackup(params: {
-  skillsRoot: string;
-  backupDir: string;
-  skillDirs: readonly string[];
-  resultSkillDirs: readonly string[];
-}): Promise<void> {
+async function restoreSkillCollectionBackup(
+  params: Parameters<typeof restoreSkillCollectionBackupTransaction>[0],
+): Promise<void> {
   const removeDirs = new Set([
     ...params.skillDirs.map((relativeDir) => path.join(params.skillsRoot, relativeDir)),
     ...params.resultSkillDirs.map((relativeDir) => path.join(params.skillsRoot, relativeDir)),
@@ -167,16 +88,6 @@ async function discardRestoreSnapshot(backupDir: string, rollbackDir: string): P
 }
 
 async function removeSkillCollectionDirectory(skillsRoot: string, skillDir: string): Promise<void> {
-  const relativePath = relativeSkillCollectionPath(skillsRoot, skillDir);
-  await removePathWithinRoot({
-    rootDir: skillsRoot,
-    relativePath,
-    recursive: true,
-    force: false,
-  });
-}
-
-function relativeSkillCollectionPath(skillsRoot: string, skillDir: string): string {
   const relativePath = path.relative(skillsRoot, skillDir);
   if (
     !relativePath ||
@@ -186,5 +97,10 @@ function relativeSkillCollectionPath(skillsRoot: string, skillDir: string): stri
   ) {
     throw new Error(`Skill directory must be inside the Skill Workshop directory: ${skillDir}`);
   }
-  return relativePath;
+  await removePathWithinRoot({
+    rootDir: skillsRoot,
+    relativePath,
+    recursive: true,
+    force: false,
+  });
 }

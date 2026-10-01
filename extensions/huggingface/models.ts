@@ -41,10 +41,6 @@ type HFModelEntry = {
   }>;
 };
 
-type OpenAIListModelsResponse = {
-  data?: HFModelEntry[];
-};
-
 export const HUGGINGFACE_MODEL_CATALOG: ModelDefinitionConfig[] = buildManifestModelProviderConfig({
   providerId: "huggingface",
   catalog: HUGGINGFACE_MANIFEST_CATALOG,
@@ -57,14 +53,7 @@ export function isHuggingfacePolicyLocked(modelRef: string): boolean {
 
 function isReasoningModelHeuristic(modelId: string): boolean {
   const lower = normalizeLowercaseStringOrEmpty(modelId);
-  return (
-    lower.includes("r1") ||
-    lower.includes("reason") ||
-    lower.includes("thinking") ||
-    lower.includes("reasoner") ||
-    lower.includes("grok") ||
-    lower.includes("qwq")
-  );
+  return ["r1", "reason", "thinking", "grok", "qwq"].some((hint) => lower.includes(hint));
 }
 
 function displayNameFromApiEntry(entry: HFModelEntry): string {
@@ -83,7 +72,7 @@ function displayNameFromApiEntry(entry: HFModelEntry): string {
 }
 
 function readHuggingfaceModelRows(body: unknown): readonly unknown[] {
-  const data = (body as OpenAIListModelsResponse | undefined)?.data;
+  const data = (body as { data?: unknown } | undefined)?.data;
   if (!Array.isArray(data)) {
     throw new Error("Hugging Face model discovery response must contain a data array");
   }
@@ -134,6 +123,7 @@ function projectHuggingfaceModels(rows: readonly unknown[]): ModelDefinitionConf
 export async function discoverHuggingfaceModels(
   apiKey: string,
   timeoutMs = HUGGINGFACE_DISCOVERY_TIMEOUT_MS,
+  options: { discoveryMode?: "strict" } = {},
 ): Promise<ModelDefinitionConfig[]> {
   const trimmedKey = apiKey?.trim();
   if (!trimmedKey) {
@@ -142,6 +132,7 @@ export async function discoverHuggingfaceModels(
 
   const requestTimeoutMs = resolveTimerTimeoutMs(timeoutMs, HUGGINGFACE_DISCOVERY_TIMEOUT_MS);
   const provider = await buildLiveModelProviderConfig({
+    ...options,
     providerId: "huggingface",
     endpoint: `${HUGGINGFACE_BASE_URL}/models`,
     providerConfig: { baseUrl: HUGGINGFACE_BASE_URL, api: "openai-completions" },

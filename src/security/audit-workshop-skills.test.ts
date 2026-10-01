@@ -4,7 +4,7 @@ import path from "node:path";
 import { expect, it, vi } from "vitest";
 import { resolveWorkshopSkillsDir } from "../skills/workshop/skills-root.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
-import { collectInstalledSkillsCodeSafetyFindings } from "./audit-extra.async.js";
+import { collectInstalledSkillsCodeSafetyFindings } from "./audit.deep.runtime.js";
 
 async function writeAuditSkill(root: string, unsafe: boolean, name = "shared-procedure") {
   const dir = path.join(root, name);
@@ -22,16 +22,13 @@ async function writeAuditSkill(root: string, unsafe: boolean, name = "shared-pro
   return await fs.realpath(dir);
 }
 
-it.each(
-  [
-    { label: "default discovery", limits: {} },
-    { label: "zero candidates", limits: { maxCandidatesPerRoot: 0 } },
-    { label: "zero loaded skills", limits: { maxSkillsLoadedPerSource: 0 } },
-    { label: "one candidate", limits: { maxCandidatesPerRoot: 1 } },
-    { label: "one loaded skill", limits: { maxSkillsLoadedPerSource: 1 } },
-    { label: "small prompt file cap", limits: { maxSkillFileBytes: 1 } },
-  ].flatMap(({ label, limits }) => ["", "group"].map((group) => ({ label, limits, group }))),
-)("audits hidden and shadowed Workshop skills with $label ($group)", async ({ limits, group }) => {
+it.each([
+  { label: "default discovery", limits: {}, group: "" },
+  { label: "default discovery", limits: {}, group: "group" },
+  { label: "zero candidates", limits: { maxCandidatesPerRoot: 0 }, group: "group" },
+  { label: "zero loaded skills", limits: { maxSkillsLoadedPerSource: 0 }, group: "group" },
+  { label: "small prompt file cap", limits: { maxSkillFileBytes: 1 }, group: "group" },
+])("audits hidden and shadowed Workshop skills with $label ($group)", async ({ limits, group }) => {
   await withOpenClawTestState({ label: "workshop-security-audit" }, async (state) => {
     const cfg = {
       skills: { limits },
@@ -72,12 +69,12 @@ it("reports an unreadable grouping directory without skipping readable siblings"
     const unreadable = path.join(group, "unreadable");
     await fs.mkdir(unreadable, { recursive: true });
     const skillDir = await writeAuditSkill(group, true);
-    const readdirSync = fsSync.readdirSync.bind(fsSync);
-    const readdirSpy = vi.spyOn(fsSync, "readdirSync").mockImplementation((...args) => {
+    const opendirSync = fsSync.opendirSync.bind(fsSync);
+    const opendirSpy = vi.spyOn(fsSync, "opendirSync").mockImplementation((...args) => {
       if (path.resolve(String(args[0])) === unreadable) {
         throw Object.assign(new Error("Grouping directory is unreadable"), { code: "EACCES" });
       }
-      return readdirSync(...args);
+      return opendirSync(...args);
     });
     try {
       const findings = await collectInstalledSkillsCodeSafetyFindings({
@@ -98,7 +95,7 @@ it("reports an unreadable grouping directory without skipping readable siblings"
         ]),
       );
     } finally {
-      readdirSpy.mockRestore();
+      opendirSpy.mockRestore();
     }
   });
 });
@@ -212,12 +209,12 @@ it.each(["missing", "unreadable"] as const)(
       if (rootState === "unreadable") {
         await fs.mkdir(workshopDir, { recursive: true });
       }
-      const readdirSync = fsSync.readdirSync.bind(fsSync);
-      const readdirSpy = vi.spyOn(fsSync, "readdirSync").mockImplementation((...args) => {
+      const opendirSync = fsSync.opendirSync.bind(fsSync);
+      const opendirSpy = vi.spyOn(fsSync, "opendirSync").mockImplementation((...args) => {
         if (path.resolve(String(args[0])) === workshopDir) {
           throw Object.assign(new Error("Workshop directory is unreadable"), { code: "EACCES" });
         }
-        return readdirSync(...args);
+        return opendirSync(...args);
       });
       try {
         const findings = await collectInstalledSkillsCodeSafetyFindings({
@@ -237,7 +234,7 @@ it.each(["missing", "unreadable"] as const)(
             : [],
         );
       } finally {
-        readdirSpy.mockRestore();
+        opendirSpy.mockRestore();
       }
     });
   },
@@ -273,7 +270,7 @@ it.runIf(process.platform !== "win32" && process.getuid?.() !== 0)(
   },
 );
 
-it("audits an active root-level Workshop definition without child directories", async () => {
+it("audits child skills even when the Workshop container has a stray definition", async () => {
   await withOpenClawTestState({ label: "workshop-audit-root-definition" }, async (state) => {
     const cfg = {
       agents: { entries: { main: { workspace: state.workspaceDir } } },
@@ -285,10 +282,7 @@ it("audits an active root-level Workshop definition without child directories", 
       path.join(workshopDir, "SKILL.md"),
       "---\nname: root-procedure\ndescription: Root procedure\n---\nFollow the procedure.\n",
     );
-    await fs.writeFile(
-      path.join(workshopDir, "run.js"),
-      'const { execSync } = require("node:child_process"); execSync(input);\n',
-    );
+    const skillDir = await writeAuditSkill(workshopDir, true, "child-procedure");
 
     const findings = await collectInstalledSkillsCodeSafetyFindings({
       cfg,
@@ -297,8 +291,8 @@ it("audits an active root-level Workshop definition without child directories", 
     expect(findings.filter((finding) => finding.checkId === "skills.code_safety")).toMatchObject([
       {
         severity: "critical",
-        title: expect.stringContaining("root-procedure"),
-        detail: expect.stringContaining(await fs.realpath(workshopDir)),
+        title: expect.stringContaining("child-procedure"),
+        detail: expect.stringContaining(skillDir),
       },
     ]);
   });

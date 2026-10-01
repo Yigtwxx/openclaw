@@ -8,7 +8,7 @@ import {
 } from "../lifecycle/workspace-skill-write.js";
 import { resolveSkillManifestMetadata } from "../loading/frontmatter.js";
 import type { Skill } from "../loading/skill-contract.js";
-import { loadSkillRootRecords } from "../loading/skill-root-loader.js";
+import { loadSkillRootRecords, warnInvalidSkill } from "../loading/skill-root-loader.js";
 import { resolveWorkshopSkillsDir } from "./skills-root.js";
 
 function assertWritableSkillTarget(
@@ -53,6 +53,16 @@ export function listWritableWorkshopSkillSummaries(
     dir: workshopSkillsDir(options),
     source: "openclaw-workshop",
     config: options.config,
+    onDiagnostic: (diagnostic) => {
+      warnInvalidSkill("openclaw-workshop", diagnostic);
+      // A failed read is not an empty collection. Keep intentional loader
+      // exclusions, but never use an unreadable inventory for review or display.
+      if (diagnostic.kind === "read") {
+        throw new Error(
+          "Workshop skills could not be read. Check access to the skill files, then retry.",
+        );
+      }
+    },
   });
   return records
     .map(({ skill, frontmatter }) => ({
@@ -63,15 +73,6 @@ export function listWritableWorkshopSkillSummaries(
       filePath: skill.filePath,
     }))
     .toSorted((left, right) => left.name.localeCompare(right.name));
-}
-
-function resolveWritableWorkshopSkillSummary(
-  skillName: string,
-  options: WorkshopSkillReadOptions,
-): WritableWorkshopSkillSummary | undefined {
-  return (
-    resolveSkillStatusEntry(listWritableWorkshopSkillSummaries(options), skillName) ?? undefined
-  );
 }
 
 export async function readWritableWorkshopSkill(
@@ -89,7 +90,7 @@ export async function readWritableWorkshopSkill(
   if (!name) {
     throw new Error("Skill name is required.");
   }
-  const targetSkill = resolveWritableWorkshopSkillSummary(name, options);
+  const targetSkill = resolveSkillStatusEntry(listWritableWorkshopSkillSummaries(options), name);
   if (!targetSkill) {
     throw new Error(
       `Skill Workshop can only update skills it generated. No Workshop-generated skill matched: ${name}. Create it as a new skill, or edit the file directly.`,

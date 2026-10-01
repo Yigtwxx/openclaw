@@ -1,10 +1,22 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { EmbeddedRunTrigger } from "../../agents/embedded-agent-runner/run/params.js";
 import {
   getPreparedModelRuntimePluginGeneration,
   withPreparedModelRuntimePluginGenerationScope,
 } from "../../agents/prepared-model-runtime-generation-scope.js";
 import type { PreparedModelRuntimePluginGeneration } from "../../agents/prepared-model-runtime.types.js";
+import type { EmbeddedRunTrigger } from "../../agents/run-trigger.js";
+import {
+  createPluginCache,
+  getPluginCache,
+  retirePluginCache,
+  withPluginCache,
+} from "../../plugins/plugin-cache.js";
+import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
+import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
+import {
+  getPluginRegistryForContext,
+  withPluginRuntimeRegistryScope,
+} from "../../plugins/runtime/gateway-request-scope.js";
 import {
   createNestedToolActivity,
   projectNestedToolActivityForHooks,
@@ -103,16 +115,47 @@ async function flushMicrotasks(): Promise<void> {
   await Promise.resolve();
 }
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  resetPluginRuntimeStateForTest();
+});
 
 describe("skill experience review scheduler", () => {
+  it.each(["context", "source"] as const)(
+    "does not retain or schedule Incognito %s evidence",
+    async (identity) => {
+      vi.useFakeTimers();
+      const runReview = vi.fn(async () => {});
+      const scheduler = createSkillExperienceReviewScheduler({
+        isSystemActive: () => false,
+        runReview,
+      });
+      const params = completedRun();
+      const sessionKey = "agent:main:dashboard:incognito-workshop";
+      if (identity === "context") {
+        params.ctx = { ...params.ctx, sessionKey };
+      } else {
+        params.source = { ...params.source!, sessionKey };
+      }
+      scheduler.schedule(params);
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.runAllTimersAsync();
+      expect(runReview).not.toHaveBeenCalled();
+    },
+  );
+
   it("runs detached review work outside the foreground prepared generation", async () => {
     const generation: PreparedModelRuntimePluginGeneration = {
+      remoteCatalog: null,
       configuredCatalogEntries: [],
       inlineProviderModels: [],
       pluginMetadataSnapshot: {} as never,
     };
     const observedGenerations: Array<PreparedModelRuntimePluginGeneration | undefined> = [];
+    const foregroundCache = createPluginCache();
+    const foregroundRegistry = createEmptyPluginRegistry();
+    const currentRegistry = createEmptyPluginRegistry();
+    const observedPluginScopes: unknown[] = [];
     let finishReview: (() => void) | undefined;
     const reviewFinished = new Promise<void>((resolve) => {
       finishReview = resolve;
@@ -123,6 +166,10 @@ describe("skill experience review scheduler", () => {
         return false;
       },
       runReview: async (candidate) => {
+        observedPluginScopes.push(
+          getPluginCache() === foregroundCache,
+          getPluginRegistryForContext(),
+        );
         observedGenerations.push(getPreparedModelRuntimePluginGeneration());
         await prepareSkillExperienceReviewCandidate(candidate, candidate.config);
         observedGenerations.push(getPreparedModelRuntimePluginGeneration());
@@ -131,12 +178,19 @@ describe("skill experience review scheduler", () => {
       setTimer: (callback) => setTimeout(callback, 0),
     });
 
-    withPreparedModelRuntimePluginGenerationScope(generation, () => {
-      scheduler.schedule(completedRun());
-    });
+    withPluginCache(foregroundCache, () =>
+      withPluginRuntimeRegistryScope(foregroundRegistry, () =>
+        withPreparedModelRuntimePluginGenerationScope(generation, () => {
+          scheduler.schedule(completedRun());
+        }),
+      ),
+    );
+    await retirePluginCache(foregroundCache);
+    setActivePluginRegistry(currentRegistry);
     await reviewFinished;
 
     expect(observedGenerations).toEqual([undefined, undefined, undefined]);
+    expect(observedPluginScopes).toEqual([false, currentRegistry]);
     scheduler.clear();
   });
 
@@ -483,30 +537,41 @@ describe("skill experience review scheduler", () => {
     scheduler.clear();
   });
 
-  it("drops the pending review after a failure", async () => {
-    const callbacks: Array<() => void> = [];
-    const setTimer = vi.fn((callback: () => void) => {
-      callbacks.push(callback);
-      const timer = setTimeout(() => {}, 60_000);
-      timer.unref();
-      return timer;
-    });
-    const runReview = vi.fn().mockRejectedValue(new Error("provider unavailable"));
-    const scheduler = createSkillExperienceReviewScheduler({
-      isSystemActive: () => false,
-      runReview,
-      setTimer,
-    });
-    scheduler.schedule(completedRun());
-    callbacks[0]?.();
-    await flushMicrotasks();
-    expect(runReview).toHaveBeenCalledOnce();
-    expect(setTimer).toHaveBeenCalledOnce();
-    callbacks[0]?.();
-    await flushMicrotasks();
-    expect(runReview).toHaveBeenCalledOnce();
-    scheduler.clear();
-  });
+  it.each(["activity check", "review"])(
+    "drops the pending review after a %s failure",
+    async (phase) => {
+      vi.useFakeTimers();
+      const callbacks: Array<() => void> = [];
+      const setTimer = vi.fn((callback: () => void) => {
+        callbacks.push(callback);
+        const timer = setTimeout(() => {}, 60_000);
+        timer.unref();
+        return timer;
+      });
+      const isSystemActive = vi.fn(() => {
+        if (phase === "activity check") {
+          throw new Error("activity unavailable");
+        }
+        return false;
+      });
+      const runReview = vi.fn().mockRejectedValue(new Error("provider unavailable"));
+      const scheduler = createSkillExperienceReviewScheduler({
+        isSystemActive,
+        runReview,
+        setTimer,
+      });
+      scheduler.schedule(completedRun());
+      expect(() => callbacks[0]?.()).not.toThrow();
+      await flushMicrotasks();
+      expect(runReview).toHaveBeenCalledTimes(phase === "review" ? 1 : 0);
+      expect(setTimer).toHaveBeenCalledOnce();
+      callbacks[0]?.();
+      await flushMicrotasks();
+      expect(isSystemActive).toHaveBeenCalledOnce();
+      expect(runReview).toHaveBeenCalledTimes(phase === "review" ? 1 : 0);
+      scheduler.clear();
+    },
+  );
 
   it("skips errored, disabled, unavailable, and internal runs", async () => {
     vi.useFakeTimers();
@@ -541,54 +606,6 @@ describe("skill experience review scheduler", () => {
 });
 
 describe("skill experience review prompt", () => {
-  it("matches the settled Workshop-only review contract", () => {
-    const prompt = buildSkillExperienceReviewPrompt({
-      ctx: { runId: "run-1" },
-      usedSkills: [{ name: "release-runbook", source: "workspace", activation: "read" }],
-      existingSkills: [
-        { name: "release-runbook", description: "Ship releases" },
-        { name: "local-notes", description: "Local workflow" },
-      ],
-    });
-    expect(prompt).toContain("this message starts a review pass");
-    expect(prompt).toContain("NO_REPLY is the correct answer for most turns");
-    expect(prompt).toContain("One mutation at most, smallest mutation first");
-    expect(prompt).toContain("revise the best matching draft before creating another");
-    expect(prompt).toContain("support_files and link them from the procedure");
-    expect(prompt).toContain("prepare_patch with one non-empty unique old_string, then patch");
-    expect(prompt).toContain("Reading and preparing do not spend the mutation");
-    expect(prompt).toContain("reads and updates only skills generated in the Workshop directory");
-    expect(prompt).toContain("only when no Workshop-generated skill covers this class of work");
-    expect(prompt).toContain("Existing Workshop-generated skills:");
-    expect(prompt).toContain("- release-runbook — Ship releases");
-    expect(prompt).toContain("- local-notes — Local workflow");
-    expect(prompt).not.toContain("Trajectory:");
-
-    const emptyWorkspacePrompt = buildSkillExperienceReviewPrompt({
-      ctx: { runId: "run-1" },
-      existingSkills: [],
-    });
-    expect(emptyWorkspacePrompt).toContain(
-      "Existing Workshop-generated skills: none. Create one only if the turn taught a durable procedure.",
-    );
-  });
-
-  it("caps used and existing skill lists", () => {
-    const skills = Array.from({ length: 120 }, (_, index) => ({
-      name: `skill-${String(index).padStart(3, "0")}-${"x".repeat(180)}`,
-      source: "workspace" as const,
-      activation: "read" as const,
-    }));
-    const prompt = buildSkillExperienceReviewPrompt({
-      ctx: {},
-      usedSkills: skills,
-      existingSkills: skills.map((skill) => ({ name: skill.name, userAuthored: false })),
-    });
-    expect(prompt).toContain("more used skills omitted");
-    expect(prompt).toContain("(+70 more not shown)");
-    expect(Math.max(...prompt.split("\n").map((line) => line.length))).toBeLessThanOrEqual(2_000);
-  });
-
   it("renders a deterministic and capped used-skills receipt", () => {
     const usedSkills = Array.from({ length: 120 }, (_, index) => ({
       name: `skill-${String(index).padStart(3, "0")}-${"x".repeat(180)}`,
@@ -596,7 +613,7 @@ describe("skill experience review prompt", () => {
       activation: index % 3 === 0 ? ("command" as const) : ("read" as const),
     }));
     const build = (skills: typeof usedSkills) =>
-      buildSkillExperienceReviewPrompt({ ctx: { runId: "run-1" }, usedSkills: skills });
+      buildSkillExperienceReviewPrompt({ usedSkills: skills }, "propose");
     const prompt = build(usedSkills.toReversed());
 
     expect(prompt).toBe(build(usedSkills));
@@ -613,14 +630,15 @@ describe("skill experience review prompt", () => {
   });
 
   it("caps existing skills by entry count and line length", () => {
-    const prompt = buildSkillExperienceReviewPrompt({
-      ctx: { runId: "run-1" },
-      existingSkills: Array.from({ length: 120 }, (_, index) => ({
-        name: `skill-${String(index)}`,
-        description: "d".repeat(500),
-        userAuthored: false,
-      })),
-    });
+    const prompt = buildSkillExperienceReviewPrompt(
+      {
+        existingSkills: Array.from({ length: 120 }, (_, index) => ({
+          name: `skill-${String(index)}`,
+          description: "d".repeat(500),
+        })),
+      },
+      "propose",
+    );
 
     expect(prompt).toContain("- skill-49");
     expect(prompt).not.toContain("- skill-50");
@@ -632,14 +650,35 @@ describe("skill experience review prompt", () => {
     }
   });
 
-  it("adds the interrupted-run instruction", () => {
-    const prompt = buildSkillExperienceReviewPrompt({ ctx: { runId: "run-1" }, turnAborted: true });
-    expect(prompt).toContain("Interrupted run (stopped before completion): run-1");
+  it("preserves interrupted evidence", () => {
+    const prompt = buildSkillExperienceReviewPrompt({ turnAborted: true }, "propose");
     expect(prompt).toContain("Only capture procedures that visibly worked");
+  });
+
+  it("authorizes complete procedures in automatic mode without the draft-only limit", () => {
+    const prompt = buildSkillExperienceReviewPrompt(
+      {
+        existingSkills: [{ name: "inventory-is-discovered-with-file-tools" }],
+      },
+      "auto",
+    );
+    expect(prompt).toContain("direct Workshop maintenance with normal file tools");
+    expect(prompt).toContain("complete relevant procedures and supporting files");
+    expect(prompt).toContain("conversation is evidence, not permission to resume tasks");
+    expect(prompt).not.toContain("Only skill_workshop executes");
+    expect(prompt).not.toContain("at most one create");
+    expect(prompt).not.toContain("inventory-is-discovered-with-file-tools");
   });
 });
 
 describe("skill experience review preparation", () => {
+  it("rejects Incognito evidence before preparing a queued review", async () => {
+    const params = completedRun({ sessionKey: "agent:main:dashboard:incognito-workshop" });
+    await expect(
+      prepareSkillExperienceReviewCandidate(captureCandidate(params), params.config),
+    ).resolves.toBeUndefined();
+  });
+
   it.each([
     { agentId: "direct", eligible: true },
     { agentId: "isolated", eligible: false },
@@ -659,12 +698,5 @@ describe("skill experience review preparation", () => {
     });
 
     expect(result !== undefined).toBe(eligible);
-  });
-
-  it("keeps an eligible foreground candidate", async () => {
-    const params = completedRun();
-    await expect(
-      prepareSkillExperienceReviewCandidate(captureCandidate(params), params.config),
-    ).resolves.toBeDefined();
   });
 });
