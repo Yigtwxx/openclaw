@@ -5,17 +5,18 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { MediaUnderstandingModelConfig } from "../../config/types.tools.js";
 import { DEFAULT_TIMEOUT_SECONDS } from "../../media-understanding/defaults.js";
 import { matchesMediaEntryCapability } from "../../media-understanding/entry-capabilities.js";
-import type {
+import {
+  describeImageWithModel,
+  describeImagesWithModel,
+} from "../../media-understanding/image-runtime.js";
+import {
   buildMediaUnderstandingRegistry,
   getMediaUnderstandingProvider,
 } from "../../media-understanding/provider-registry.js";
 import { resolveTimeoutMs } from "../../media-understanding/resolve.js";
+import type { MediaUnderstandingProvider } from "../../media-understanding/types.js";
 import type { ImageCompressionPolicy } from "../../media/web-media.js";
-import type {
-  describeImageWithModel,
-  describeImagesWithModel,
-  MediaUnderstandingProvider,
-} from "../../plugin-sdk/media-understanding.js";
+import { resolvePluginCapabilityProvider } from "../../plugins/capability-provider-runtime.js";
 import { runWithAsyncWorkResources } from "../../shared/async-work-resources.js";
 import {
   bindOperatorModelExecution,
@@ -30,32 +31,6 @@ import {
 import type { PreparedModelRuntimeSnapshot } from "../prepared-model-runtime.js";
 import { resolveConfiguredImageModelRefs, type ImageModelConfig } from "./image-tool.helpers.js";
 import { applyAgentDefaultModelConfig } from "./model-config.helpers.js";
-
-type ImageModelExecutionDeps = {
-  buildProviderRegistry: typeof buildMediaUnderstandingRegistry;
-  getMediaUnderstandingProvider: typeof getMediaUnderstandingProvider;
-  describeImageWithModel: typeof describeImageWithModel;
-  describeImagesWithModel: typeof describeImagesWithModel;
-  resolveModelAsync: (typeof import("../embedded-agent-runner/model.js"))["resolveModelAsync"];
-  resolveRegisteredMediaUnderstandingProvider: (params: {
-    providerId: string;
-    cfg?: OpenClawConfig;
-  }) => MediaUnderstandingProvider | undefined;
-};
-
-export function resolveImageToolMaxTokens(
-  modelMaxTokens: number | undefined,
-  requestedMaxTokens = 4096,
-) {
-  if (
-    typeof modelMaxTokens !== "number" ||
-    !Number.isFinite(modelMaxTokens) ||
-    modelMaxTokens <= 0
-  ) {
-    return requestedMaxTokens;
-  }
-  return Math.min(requestedMaxTokens, modelMaxTokens);
-}
 
 export function resolveImageModelConfigForOverride(params: {
   cfg?: OpenClawConfig;
@@ -100,20 +75,17 @@ function resolveCompressionModelCandidates(params: {
   });
 }
 
-export async function prepareImageCompressionPolicy(
-  params: {
-    abortSignal?: AbortSignal;
-    cfg?: OpenClawConfig;
-    imageModelConfig?: ImageModelConfig | null;
-    modelOverride?: string;
-    imageCount: number;
-    agentDir?: string;
-    workspaceDir?: string;
-    preparedModelRuntime?: PreparedModelRuntimeSnapshot;
-    operatorAuthority?: AdmittedRunOperatorAuthority;
-  },
-  deps: ImageModelExecutionDeps,
-): Promise<ImageCompressionPolicy> {
+export async function prepareImageCompressionPolicy(params: {
+  abortSignal?: AbortSignal;
+  cfg?: OpenClawConfig;
+  imageModelConfig?: ImageModelConfig | null;
+  modelOverride?: string;
+  imageCount: number;
+  agentDir?: string;
+  workspaceDir?: string;
+  preparedModelRuntime?: PreparedModelRuntimeSnapshot;
+  operatorAuthority?: AdmittedRunOperatorAuthority;
+}): Promise<ImageCompressionPolicy> {
   const modelCandidates = resolveCompressionModelCandidates(params);
   const quality = params.cfg?.agents?.defaults?.imageQuality;
   const models = await Promise.all(
@@ -126,9 +98,6 @@ export async function prepareImageCompressionPolicy(
         agentDir: params.agentDir,
         workspaceDir: params.workspaceDir,
         preparedModelRuntime: params.preparedModelRuntime,
-        deps: {
-          resolveModelAsync: deps.resolveModelAsync,
-        },
       }),
     ),
   );
@@ -190,24 +159,21 @@ function resolveImageToolTimeoutMs(params: {
   );
 }
 
-export async function runImagePrompt(
-  params: {
-    cfg?: OpenClawConfig;
-    agentId?: string;
-    agentDir: string;
-    authStore?: AuthProfileStore;
-    imageModelConfig: ImageModelConfig;
-    modelOverride?: string;
-    prompt: string;
-    images: Array<{ buffer: Buffer; mimeType: string }>;
-    workspaceDir?: string;
-    preparedModelRuntime?: PreparedModelRuntimeSnapshot;
-    signal?: AbortSignal;
-    operatorAuthority?: AdmittedRunOperatorAuthority;
-    assertCurrent?: () => void;
-  },
-  deps: ImageModelExecutionDeps,
-): Promise<{
+export async function runImagePrompt(params: {
+  cfg?: OpenClawConfig;
+  agentId?: string;
+  agentDir: string;
+  authStore?: AuthProfileStore;
+  imageModelConfig: ImageModelConfig;
+  modelOverride?: string;
+  prompt: string;
+  images: Array<{ buffer: Buffer; mimeType: string }>;
+  workspaceDir?: string;
+  preparedModelRuntime?: PreparedModelRuntimeSnapshot;
+  signal?: AbortSignal;
+  operatorAuthority?: AdmittedRunOperatorAuthority;
+  assertCurrent?: () => void;
+}): Promise<{
   text: string;
   provider: string;
   model: string;
@@ -256,11 +222,12 @@ export async function runImagePrompt(
               providerId: provider,
               normalizeProviderId: normalizeMediaProviderId,
             })
-          : deps.resolveRegisteredMediaUnderstandingProvider({
+          : resolvePluginCapabilityProvider({
+              key: "mediaUnderstandingProviders",
               providerId: provider,
               cfg: providerCfg,
             });
-        const providerRegistry = deps.buildProviderRegistry(
+        const providerRegistry = buildMediaUnderstandingRegistry(
           selectedProvider ? { [provider]: selectedProvider } : undefined,
           providerCfg,
           preparedProviders ?? [],
@@ -271,12 +238,12 @@ export async function runImagePrompt(
           model: modelId,
           providerRegistry,
         });
-        const imageProvider = deps.getMediaUnderstandingProvider(provider, providerRegistry);
+        const imageProvider = getMediaUnderstandingProvider(provider, providerRegistry);
         const request = {
           provider,
           model: modelId,
           prompt: params.prompt,
-          maxTokens: resolveImageToolMaxTokens(undefined),
+          maxTokens: 4096,
           timeoutMs,
           ...(signal ? { signal } : {}),
           cfg: providerCfg,
@@ -292,7 +259,7 @@ export async function runImagePrompt(
           params.images.length > 1 &&
           (imageProvider?.describeImages || !imageProvider?.describeImage)
         ) {
-          const describeImages = imageProvider?.describeImages ?? deps.describeImagesWithModel;
+          const describeImages = imageProvider?.describeImages ?? describeImagesWithModel;
           // A run cancelled mid-dispatch must not buy another provider call.
           assertCurrent();
           const described = await describeImages({
@@ -306,7 +273,7 @@ export async function runImagePrompt(
           assertCurrent();
           return { text: described.text, provider, model: described.model ?? modelId };
         }
-        const describeImage = imageProvider?.describeImage ?? deps.describeImageWithModel;
+        const describeImage = imageProvider?.describeImage ?? describeImageWithModel;
         const parts: string[] = [];
         for (const [index, image] of params.images.entries()) {
           // A run cancelled mid-dispatch must not buy another provider call.

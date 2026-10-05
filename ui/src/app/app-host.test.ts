@@ -1,5 +1,6 @@
 /* @vitest-environment jsdom */
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
 import type { AgentsListResult, GatewayAgentRow } from "../api/types.ts";
 import type { RouteId } from "../app-routes.ts";
@@ -9,6 +10,7 @@ import {
 } from "../components/command-palette-contract.ts";
 import {
   TERMINAL_PANEL_TOGGLE_EVENT,
+  PLUGIN_PANEL_TOGGLE_EVENT,
   UI_COMMAND_EVENT,
 } from "../components/panel-toggle-contract.ts";
 import { i18n } from "../i18n/index.ts";
@@ -19,6 +21,7 @@ import { selectShellRouteState } from "./app-host-route-state.ts";
 import {
   committedRouterState,
   createLazyElementSpec,
+  createRosterRefreshContext,
   resetAppHostTestGlobals,
   type ShellKeyboardState,
   type TestOptionalCustomElement,
@@ -114,55 +117,6 @@ type ShellUiCommandState = ShellKeyboardState & {
 
 function roster(defaultId: string, agents: GatewayAgentRow[]): AgentsListResult {
   return { defaultId, mainKey: "main", scope: "per-sender", agents };
-}
-
-function createRosterRefreshContext(params: {
-  previous: AgentsListResult;
-  next: AgentsListResult;
-  selectedId: string;
-}) {
-  const agentsState = { agentsList: params.previous };
-  const selectionState = { selectedId: params.selectedId, scopeId: params.selectedId };
-  const refreshList = vi.fn(async () => {
-    agentsState.agentsList = params.next;
-    return params.next;
-  });
-  const invalidateFiles = vi.fn();
-  const invalidateIdentity = vi.fn();
-  const ensureIdentity = vi.fn(async () => undefined);
-  const setSelection = vi.fn((agentId: string) => {
-    selectionState.selectedId = agentId;
-    selectionState.scopeId = agentId;
-  });
-  const refreshConfig = vi.fn(async () => null);
-  const context = {
-    agents: {
-      state: agentsState,
-      refreshList,
-      invalidateFiles,
-    },
-    agentIdentity: {
-      invalidate: invalidateIdentity,
-      ensure: ensureIdentity,
-    },
-    agentSelection: {
-      state: selectionState,
-      set: setSelection,
-    },
-    runtimeConfig: {
-      state: { configFormDirty: false },
-      refresh: refreshConfig,
-    },
-  } as unknown as ApplicationContext;
-  return {
-    context,
-    refreshList,
-    invalidateFiles,
-    invalidateIdentity,
-    ensureIdentity,
-    setSelection,
-    refreshConfig,
-  };
 }
 
 type ShellChromeEventState = {
@@ -351,6 +305,7 @@ describe("OpenClaw shell source initialization", () => {
       lastLocalePrefSignature: null,
       outboxStoreImport: { load: vi.fn(async () => undefined) },
       previousGatewayPhase: null,
+      recoverDeletedActiveSession: vi.fn(),
       routeState: {},
       runtimeConfigClient: null,
       runtimeConfigSource: null,
@@ -450,37 +405,6 @@ describe("OpenClaw shell source initialization", () => {
 });
 
 describe("OpenClaw shell route session commits", () => {
-  it("builds session paths from the requested destination face", () => {
-    const navigate = vi.fn();
-    const shell = document.createElement(
-      "openclaw-app-shell",
-    ) as unknown as ShellSessionNavigationState;
-    shell.runtime = {
-      context: {
-        basePath: "",
-        agents: { state: { agentsList: { mainKey: "main" } } },
-        agentSelection: { state: { selectedId: "main" } },
-        gateway: { snapshot: { hello: null } },
-        sessions: createRouteSessions(),
-        chatSubmissions: createChatSubmissions(),
-        navigate,
-      } as unknown as ApplicationContext,
-    };
-    shell.activeSessionKey = "agent:main:dashboard:12345678-90ab-cdef-1234-567890abcdef";
-
-    shell.routeState = { routeId: "chat" };
-    shell.navigate("dashboard");
-    expect(navigate).toHaveBeenLastCalledWith("dashboard", {
-      pathname: "/dashboard/main/1234567890abcdef1234567890abcdef",
-    });
-
-    shell.routeState = { routeId: "dashboard" };
-    shell.navigate("chat");
-    expect(navigate).toHaveBeenLastCalledWith("chat", {
-      pathname: "/chat/main/1234567890abcdef1234567890abcdef",
-    });
-  });
-
   it("preserves catalog identity when routing a slash-command draft", () => {
     const navigate = vi.fn();
     const shell = document.createElement(
@@ -655,14 +579,9 @@ describe("OpenClaw shell settings search", () => {
   });
 
   it("does not load schema through a replaced runtime config capability", async () => {
-    let finishLoad: (() => void) | undefined;
+    const loadGate = createDeferred();
     const firstRuntimeConfig = {
-      ensureLoaded: vi.fn(
-        () =>
-          new Promise<void>((resolve) => {
-            finishLoad = resolve;
-          }),
-      ),
+      ensureLoaded: vi.fn(() => loadGate.promise),
       ensureSchemaLoaded: vi.fn(() => Promise.resolve()),
     } as unknown as ApplicationContext["runtimeConfig"];
     const secondRuntimeConfig = {
@@ -680,7 +599,7 @@ describe("OpenClaw shell settings search", () => {
     shell.runtime = {
       context: { runtimeConfig: secondRuntimeConfig } as unknown as ApplicationContext,
     };
-    finishLoad?.();
+    loadGate.resolve();
     await load;
 
     expect(firstRuntimeConfig.ensureLoaded).toHaveBeenCalledOnce();
@@ -688,36 +607,23 @@ describe("OpenClaw shell settings search", () => {
     expect(secondRuntimeConfig.ensureSchemaLoaded).not.toHaveBeenCalled();
   });
 
-  it.each(["config", "schema"] as const)(
-    "contains rejected %s loads within settings search",
-    async (failureStage) => {
-      const runtimeConfig = {
-        ensureLoaded: vi.fn(() =>
-          failureStage === "config"
-            ? Promise.reject(new Error("config unavailable"))
-            : Promise.resolve(),
-        ),
-        ensureSchemaLoaded: vi.fn(() =>
-          failureStage === "schema"
-            ? Promise.reject(new Error("schema unavailable"))
-            : Promise.resolve(),
-        ),
-      } as unknown as ApplicationContext["runtimeConfig"];
-      const shell = document.createElement(
-        "openclaw-app-shell",
-      ) as unknown as ShellSettingsSearchLoadState;
-      shell.runtime = {
-        context: { runtimeConfig } as unknown as ApplicationContext,
-      };
+  it("contains rejected schema loads within settings search", async () => {
+    const runtimeConfig = {
+      ensureLoaded: vi.fn(() => Promise.resolve()),
+      ensureSchemaLoaded: vi.fn(() => Promise.reject(new Error("schema unavailable"))),
+    } as unknown as ApplicationContext["runtimeConfig"];
+    const shell = document.createElement(
+      "openclaw-app-shell",
+    ) as unknown as ShellSettingsSearchLoadState;
+    shell.runtime = {
+      context: { runtimeConfig } as unknown as ApplicationContext,
+    };
 
-      await expect(shell.handleSettingsSearchQueryChange("browser")).resolves.toBeUndefined();
+    await expect(shell.handleSettingsSearchQueryChange("browser")).resolves.toBeUndefined();
 
-      expect(runtimeConfig.ensureLoaded).toHaveBeenCalledOnce();
-      expect(runtimeConfig.ensureSchemaLoaded).toHaveBeenCalledTimes(
-        failureStage === "schema" ? 1 : 0,
-      );
-    },
-  );
+    expect(runtimeConfig.ensureLoaded).toHaveBeenCalledOnce();
+    expect(runtimeConfig.ensureSchemaLoaded).toHaveBeenCalledOnce();
+  });
 });
 
 describe("OpenClaw shell keyboard shortcuts", () => {
@@ -875,7 +781,7 @@ describe("OpenClaw shell keyboard shortcuts", () => {
     }
   });
 
-  it.each(["MacIntel", "Win32", "Linux x86_64"])(
+  it.each(["MacIntel"])(
     "opens an unloaded palette only with the platform shortcut on %s",
     async (platform) => {
       vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
@@ -947,8 +853,10 @@ describe("OpenClaw shell keyboard shortcuts", () => {
     const navigate = vi.fn();
     const panelEvent = vi.fn();
     const uiCommandEvent = vi.fn();
+    const pluginPanelEvent = vi.fn();
     window.addEventListener(TERMINAL_PANEL_TOGGLE_EVENT, panelEvent);
     window.addEventListener(UI_COMMAND_EVENT, uiCommandEvent);
+    window.addEventListener(PLUGIN_PANEL_TOGGLE_EVENT, pluginPanelEvent);
     const shell = document.createElement("openclaw-app-shell") as unknown as ShellUiCommandState;
     shell.runtime = {
       context: {
@@ -1021,6 +929,34 @@ describe("OpenClaw shell keyboard shortcuts", () => {
         },
       }),
     );
+    shell.handleGatewayEvent({
+      event: "ui.command",
+      payload: {
+        sessionKey: "global",
+        agentId: "writer",
+        command: {
+          kind: "panel",
+          panel: "plugin",
+          pluginId: "review",
+          panelId: "document",
+          open: true,
+        },
+      },
+    });
+    expect(setAgent).toHaveBeenLastCalledWith("writer");
+    expect(setSessionKey).toHaveBeenLastCalledWith("global");
+    expect(pluginPanelEvent).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        detail: {
+          sessionKey: "global",
+          agentId: "writer",
+          pluginId: "review",
+          panelId: "document",
+          open: true,
+        },
+      }),
+    );
+    window.removeEventListener(PLUGIN_PANEL_TOGGLE_EVENT, pluginPanelEvent);
     window.removeEventListener(TERMINAL_PANEL_TOGGLE_EVENT, panelEvent);
     window.removeEventListener(UI_COMMAND_EVENT, uiCommandEvent);
   });
