@@ -41,7 +41,7 @@ import {
   publishUserChannelPolicyInDatabase,
   resolveUserChannelAuthorizationPolicy,
 } from "../../state/user-channel-identities.js";
-import { setUserProfileRole } from "../../state/user-profiles.js";
+import { setUserProfileRole } from "../../state/user-profile-writes.worker.js";
 import { createOutboundTestPlugin, createTestRegistry } from "../../test-utils/channel-plugins.js";
 import { persistPendingFinalDeliveryMarker } from "../pending-final-delivery-marker.js";
 import { createAgentRunRestartAbortError } from "../run-termination.js";
@@ -189,7 +189,6 @@ it.each(
       const target = { sessionKey, storePath };
       const entry = {
         sessionId: "restart-final",
-        status: "running" as const,
         updatedAt: Date.now(),
       };
       await replaceSessionEntry(target, entry);

@@ -31,9 +31,6 @@ export const DEVICE_TOKEN_MUTATION_PARAMS = {
   deviceId: "device-1",
   role: "operator",
 } as const satisfies Record<string, unknown>;
-export const NODE_PAIR_REMOVE_PARAMS = {
-  nodeId: "device-1",
-} as const satisfies Record<string, unknown>;
 export const BACKEND_CONNECT_PARAMS = {
   minProtocol: PROTOCOL_VERSION,
   maxProtocol: PROTOCOL_VERSION,
@@ -64,10 +61,6 @@ export function createCloseMock() {
   return vi.fn<CloseGatewayConnection>();
 }
 
-export function createBackendClient() {
-  return { id: "gateway-client", version: "dev", platform: "test", mode: "backend" };
-}
-
 export function waitForFast(assertion: () => void | Promise<void>) {
   return vi.waitFor(assertion, { interval: 1 });
 }
@@ -93,6 +86,72 @@ export async function createTestAgentRuntimeIdentityLease() {
 
 export function createSetCloseCauseMock() {
   return vi.fn<SetCloseCause>();
+}
+
+export function connectTrustedProxyUser(
+  loadConfigMock: Pick<Mock, "mockImplementation">,
+  connId: string,
+  clientOverrides: Record<string, unknown> = {},
+  scopes: string[] = [],
+  handoffAuthenticatedReceive?: () => void,
+) {
+  loadConfigMock.mockImplementation(() => ({
+    gateway: {
+      auth: {
+        mode: "trusted-proxy",
+        identityScopes: { "alice@example.com": scopes },
+        trustedProxy: {
+          userHeader: "x-forwarded-user",
+          requiredHeaders: ["x-forwarded-proto"],
+        },
+      },
+      trustedProxies: ["10.0.0.1"],
+      controlUi: {
+        allowedOrigins: ["http://127.0.0.1:19001"],
+      },
+    },
+  }));
+  const harness = attachGatewayHarness({
+    connId,
+    handoffAuthenticatedReceive,
+    connectNonce: `nonce-${connId}`,
+    requestHost: "gateway.example.com:18789",
+    requestOrigin: "http://127.0.0.1:19001",
+    remoteAddr: "10.0.0.1",
+    resolvedAuth: {
+      mode: "trusted-proxy",
+      allowTailscale: false,
+      trustedProxy: {
+        userHeader: "x-forwarded-user",
+        requiredHeaders: ["x-forwarded-proto"],
+      },
+    },
+    headers: {
+      "x-forwarded-for": "203.0.113.10",
+      "x-forwarded-user": "alice@example.com",
+      "x-forwarded-proto": "https",
+    },
+    ingressAttribution: {
+      kind: "trusted-proxy",
+      clientIp: "203.0.113.10",
+      rateLimit: { subject: { key: "203.0.113.10" }, resetOnSuccess: true },
+    },
+  });
+  harness.sendConnect(`connect-${connId}`, {
+    minProtocol: PROTOCOL_VERSION,
+    maxProtocol: PROTOCOL_VERSION,
+    client: {
+      id: "openclaw-control-ui",
+      version: "dev",
+      platform: "test",
+      mode: "ui",
+      ...clientOverrides,
+    },
+    role: "operator",
+    scopes,
+    caps: [],
+  });
+  return harness;
 }
 
 export function localUserIngressFor(client: unknown) {
