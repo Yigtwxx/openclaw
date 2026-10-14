@@ -45,15 +45,17 @@ vi.mock("./restart-sentinel.js", async () => {
   };
 });
 
-vi.mock("../state/config-machine-state-write.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../state/config-machine-state-write.js")>();
+vi.mock("../state/config-machine-state-async.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../state/config-machine-state-async.js")>();
   return {
     ...actual,
-    writeConfigMachineState: (...args: Parameters<typeof actual.writeConfigMachineState>) => {
+    writeConfigMachineStateAsync: (
+      ...args: Parameters<typeof actual.writeConfigMachineStateAsync>
+    ) => {
       if (fault.at === "state-write" && fault.error) {
         throw fault.error;
       }
-      return actual.writeConfigMachineState(...args);
+      return actual.writeConfigMachineStateAsync(...args);
     },
   };
 });
@@ -92,8 +94,9 @@ function idleActiveWorkInspectors(): GatewayActiveWorkInspectors {
     getEmbeddedRuns: () => 0,
     getBackgroundExecSessions: () => 0,
     getCronRuns: () => 0,
-    getActiveTasks: () => 0,
-    getTaskBlockers: () => [],
+    getAgentRuns: () => 0,
+    getAcpRuns: () => 0,
+    getMediaRuns: () => 0,
     getRootRequests: () => 0,
     getSessionAdmissions: () => 0,
     getSessionMutations: () => 0,
@@ -153,7 +156,6 @@ describe("update campaign apply exception boundary", () => {
         tag: null,
         branch: "main",
         upstream: "origin/main",
-        upstreamSource: "tracking",
         upstreamSha: "upstream-sha",
         commitAtMs: null,
         dirty: false,
@@ -197,7 +199,7 @@ describe("update campaign apply exception boundary", () => {
       target: { kind: "git", installationMethod: "git-checkout" },
       verification: { rollbackOutcome: { status: "not-attempted" } },
     });
-    const runStatus = readUpdateRunStatus();
+    const runStatus = await readUpdateRunStatus();
     assert(!("runStatusError" in runStatus));
     const { lastRun } = runStatus;
     expect(lastRun).toEqual(run);

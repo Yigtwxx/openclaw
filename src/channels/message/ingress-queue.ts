@@ -6,6 +6,7 @@ import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-wo
 import type { OpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.types.js";
 import { runOpenClawStateWorkerOperation } from "../../state/openclaw-state-worker-store.js";
 import { resolveChannelIngressStateEnv } from "./ingress-queue-client.js";
+import { invalidateChannelIngressHealth } from "./ingress-queue-health-cache.js";
 import {
   baseRecord,
   claimedRecord,
@@ -51,9 +52,6 @@ function idFrom(value: string | { id: string }): string {
     throw new Error("Channel ingress event id cannot be empty");
   }
   return id;
-}
-function tokenFrom(value: string | { id: string; claim?: { token: string } }): string | null {
-  return typeof value === "string" ? null : (value.claim?.token ?? null);
 }
 function requiredRecord<TPayload, TMetadata>(
   row: ChannelIngressRow,
@@ -132,7 +130,6 @@ export function createChannelIngressQueue<
       (worker) => worker.execute({ type, input }, { signal }),
       {
         assertCurrent: assertActive,
-        requireStateLifecycle: true,
         createAdmission:
           claimClock || isClaimSelectionCurrent
             ? (operation) => {
@@ -165,7 +162,16 @@ export function createChannelIngressQueue<
               }
             : createSqliteWorkerWriteAdmission(assertActive, [context.admission.databasePath]),
       },
-    );
+    ).finally(() => {
+      if (
+        type !== "channelIngress.list" &&
+        type !== "channelIngress.claimSnapshot" &&
+        type !== "channelIngress.staleClaims"
+      ) {
+        // A failed reply may follow a committed write; refresh diagnostic facts either way.
+        invalidateChannelIngressHealth(context);
+      }
+    });
     // Mutations settle under their commit grant; prepared facts still need a live reader.
     if (
       type === "channelIngress.list" ||
@@ -182,7 +188,7 @@ export function createChannelIngressQueue<
       context,
       (worker) =>
         worker.execute({ type: "channelIngress.list", input: { ...input, queueName, readOnly } }),
-      { existingOnly: readOnly, assertCurrent, requireStateLifecycle: true },
+      { existingOnly: readOnly, assertCurrent },
     );
     assertQueueCurrent(context);
     return rows ?? [];
@@ -190,7 +196,7 @@ export function createChannelIngressQueue<
   const mutation = (value: string | { id: string; claim?: { token: string } }, at: number) => ({
     queueName,
     id: idFrom(value),
-    token: tokenFrom(value),
+    token: typeof value === "string" ? null : (value.claim?.token ?? null),
     now: at,
   });
 

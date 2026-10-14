@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { safeParseJsonWithSchema, safeParseWithSchema } from "openclaw/plugin-sdk/extension-shared";
 import { channelReadyPatch } from "openclaw/plugin-sdk/gateway-runtime";
-import * as proxyCaptureSdk from "openclaw/plugin-sdk/proxy-capture";
 import {
+  captureWsEventAsync,
   createDebugProxyWebSocketAgent,
   resolveDebugProxySettings,
 } from "openclaw/plugin-sdk/proxy-capture";
@@ -11,9 +11,6 @@ import { type ClientOptions, type RawData, WebSocket } from "openclaw/plugin-sdk
 import { z } from "zod";
 import { MattermostPostSchema, type MattermostPost } from "./client.js";
 import type { ChannelAccountSnapshot, RuntimeEnv } from "./runtime-api.js";
-
-// The shipped 2026.9.6 host omits async capture; retire this check when the minimum advances.
-const captureSdk: Partial<Pick<typeof proxyCaptureSdk, "captureWsEventAsync">> = proxyCaptureSdk;
 
 export type MattermostEventPayload = z.infer<typeof MattermostEventPayloadSchema>;
 
@@ -144,6 +141,17 @@ export function createMattermostConnectOnce(
   const pongTimeoutMs = opts.pongTimeoutMs ?? 10_000;
   return async () => {
     const flowId = randomUUID();
+    const captureEvent = (
+      event: Omit<Parameters<typeof captureWsEventAsync>[0], "url" | "flowId">,
+    ) => {
+      // Capture finalization owns failures; observe this connection's asynchronous writes.
+      void captureWsEventAsync({
+        ...event,
+        url: opts.wsUrl,
+        flowId,
+        meta: { subsystem: "mattermost-websocket", ...event.meta },
+      }).catch(() => {});
+    };
     const ws = webSocketFactory(opts.wsUrl, {
       maxPayload: MATTERMOST_WEBSOCKET_MAX_PAYLOAD_BYTES,
       handshakeTimeout: MATTERMOST_WEBSOCKET_HANDSHAKE_TIMEOUT_MS,
@@ -156,54 +164,29 @@ export function createMattermostConnectOnce(
       return await new Promise<void>((resolve, reject) => {
         let opened = false;
         let authenticated = false;
-        let settled = false;
-        let healthCheckEnabled = getBotUpdateAt != null;
-        let healthCheckInFlight = false;
+        let stopped = false;
         let healthCheckTimer: ReturnType<typeof setTimeout> | undefined;
-        let protocolKeepaliveEnabled = true;
         let protocolPingTimer: ReturnType<typeof setTimeout> | undefined;
         let protocolPongTimer: ReturnType<typeof setTimeout> | undefined;
         let initialUpdateAt: number | undefined;
         let authenticationSeq: number | undefined;
         let authTimer: ReturnType<typeof setTimeout> | undefined;
 
-        const clearTimers = () => {
-          if (healthCheckTimer !== undefined) {
-            clearTimeout(healthCheckTimer);
-            healthCheckTimer = undefined;
-          }
-          if (authTimer !== undefined) {
-            clearTimeout(authTimer);
-            authTimer = undefined;
-          }
-          if (protocolPingTimer !== undefined) {
-            clearTimeout(protocolPingTimer);
-            protocolPingTimer = undefined;
-          }
-          if (protocolPongTimer !== undefined) {
-            clearTimeout(protocolPongTimer);
-            protocolPongTimer = undefined;
-          }
-        };
-
         const stopHealthChecks = () => {
-          healthCheckEnabled = false;
-          protocolKeepaliveEnabled = false;
-          clearTimers();
+          stopped = true;
+          clearTimeout(healthCheckTimer);
+          clearTimeout(authTimer);
+          clearTimeout(protocolPingTimer);
+          clearTimeout(protocolPongTimer);
         };
 
         const sendProtocolPing = () => {
-          if (!protocolKeepaliveEnabled || settled) {
+          if (stopped) {
             return;
           }
-          if (protocolPongTimer !== undefined) {
-            clearTimeout(protocolPongTimer);
-          }
+          clearTimeout(protocolPongTimer);
           protocolPongTimer = setTimeout(() => {
             protocolPongTimer = undefined;
-            if (!protocolKeepaliveEnabled || settled) {
-              return;
-            }
             opts.runtime.error?.("mattermost websocket pong timeout — reconnecting");
             stopHealthChecks();
             ws.terminate();
@@ -211,9 +194,6 @@ export function createMattermostConnectOnce(
           try {
             ws.ping();
           } catch (err) {
-            if (!protocolKeepaliveEnabled || settled) {
-              return;
-            }
             opts.runtime.error?.(`mattermost websocket ping failed: ${String(err)}`);
             stopHealthChecks();
             ws.terminate();
@@ -221,7 +201,7 @@ export function createMattermostConnectOnce(
         };
 
         const scheduleProtocolPing = () => {
-          if (!protocolKeepaliveEnabled || settled || protocolPingTimer !== undefined) {
+          if (stopped || protocolPingTimer !== undefined) {
             return;
           }
           protocolPingTimer = setTimeout(() => {
@@ -231,7 +211,7 @@ export function createMattermostConnectOnce(
         };
 
         const scheduleHealthCheck = () => {
-          if (!getBotUpdateAt || !healthCheckEnabled || settled || healthCheckInFlight) {
+          if (!getBotUpdateAt || stopped) {
             return;
           }
           healthCheckTimer = setTimeout(() => {
@@ -241,13 +221,12 @@ export function createMattermostConnectOnce(
         };
 
         const runHealthCheck = async () => {
-          if (!getBotUpdateAt || !healthCheckEnabled || settled || healthCheckInFlight) {
+          if (!getBotUpdateAt || stopped) {
             return;
           }
-          healthCheckInFlight = true;
           try {
             const current = await getBotUpdateAt();
-            if (!healthCheckEnabled || settled) {
+            if (stopped) {
               return;
             }
             if (initialUpdateAt === undefined) {
@@ -262,7 +241,7 @@ export function createMattermostConnectOnce(
               ws.terminate();
             }
           } catch (err) {
-            if (!healthCheckEnabled || settled) {
+            if (stopped) {
               return;
             }
             const label =
@@ -271,40 +250,16 @@ export function createMattermostConnectOnce(
                 : "mattermost: health check error";
             opts.runtime.error?.(`${label}: ${String(err)}`);
           } finally {
-            healthCheckInFlight = false;
             scheduleHealthCheck();
           }
         };
 
-        const resolveOnce = () => {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          stopHealthChecks();
-          resolve();
-        };
-        const rejectOnce = (error: Error) => {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          stopHealthChecks();
-          reject(error);
-        };
-
         ws.on("open", () => {
           opened = true;
-          // Finalization retains capture failures; observe Promises returned by the SDK view.
-          void captureSdk
-            .captureWsEventAsync?.({
-              url: opts.wsUrl,
-              direction: "local",
-              kind: "ws-open",
-              flowId,
-              meta: { subsystem: "mattermost-websocket" },
-            })
-            .catch(() => {});
+          captureEvent({
+            direction: "local",
+            kind: "ws-open",
+          });
           opts.statusSink?.({
             connected: true,
             lifecycle: "starting",
@@ -315,22 +270,15 @@ export function createMattermostConnectOnce(
             action: "authentication_challenge",
             data: { token: opts.botToken },
           });
-          void captureSdk
-            .captureWsEventAsync?.({
-              url: opts.wsUrl,
-              direction: "outbound",
-              kind: "ws-frame",
-              flowId,
-              payload: authPayload,
-              meta: { subsystem: "mattermost-websocket", eventType: "authentication_challenge" },
-            })
-            .catch(() => {});
+          captureEvent({
+            direction: "outbound",
+            kind: "ws-frame",
+            payload: authPayload,
+            meta: { eventType: "authentication_challenge" },
+          });
           ws.send(authPayload);
           authTimer = setTimeout(() => {
             authTimer = undefined;
-            if (settled) {
-              return;
-            }
             opts.runtime.error?.("mattermost websocket authentication timed out — reconnecting");
             stopHealthChecks();
             ws.terminate();
@@ -348,25 +296,18 @@ export function createMattermostConnectOnce(
         });
 
         ws.on("pong", () => {
-          if (protocolPongTimer !== undefined) {
-            clearTimeout(protocolPongTimer);
-            protocolPongTimer = undefined;
-          }
+          clearTimeout(protocolPongTimer);
+          protocolPongTimer = undefined;
           scheduleProtocolPing();
         });
 
         ws.on("message", async (data) => {
           const raw = rawDataToString(data);
-          void captureSdk
-            .captureWsEventAsync?.({
-              url: opts.wsUrl,
-              direction: "inbound",
-              kind: "ws-frame",
-              flowId,
-              payload: Buffer.from(raw),
-              meta: { subsystem: "mattermost-websocket" },
-            })
-            .catch(() => {});
+          captureEvent({
+            direction: "inbound",
+            kind: "ws-frame",
+            payload: Buffer.from(raw),
+          });
           const payload = parseMattermostEventPayload(raw);
           if (!payload) {
             return;
@@ -374,10 +315,8 @@ export function createMattermostConnectOnce(
 
           if (payload.status === "OK" && payload.seq_reply === authenticationSeq) {
             authenticated = true;
-            if (authTimer !== undefined) {
-              clearTimeout(authTimer);
-              authTimer = undefined;
-            }
+            clearTimeout(authTimer);
+            authTimer = undefined;
             opts.statusSink?.(channelReadyPatch());
             return;
           }
@@ -412,19 +351,14 @@ export function createMattermostConnectOnce(
         });
 
         ws.on("close", (code, reason) => {
-          void captureSdk
-            .captureWsEventAsync?.({
-              url: opts.wsUrl,
-              direction: "local",
-              kind: "ws-close",
-              flowId,
-              closeCode: code,
-              payload: reason,
-              meta: { subsystem: "mattermost-websocket" },
-            })
-            .catch(() => {});
+          captureEvent({
+            direction: "local",
+            kind: "ws-close",
+            closeCode: code,
+            payload: reason,
+          });
           stopHealthChecks();
-          const message = reasonToString(reason);
+          const message = reason.toString("utf8");
           opts.statusSink?.({
             connected: false,
             lifecycle: "recovering",
@@ -435,7 +369,7 @@ export function createMattermostConnectOnce(
             },
           });
           if (opened && authenticated) {
-            resolveOnce();
+            resolve();
             return;
           }
           if (opened) {
@@ -443,23 +377,18 @@ export function createMattermostConnectOnce(
             // socket with no challenge reply (server platform/websocket_router.go),
             // so an unauthenticated close is a failed attempt: rejecting routes it
             // through reconnect backoff and the visible connection-failed error.
-            rejectOnce(new WebSocketClosedBeforeAuthenticationError(code, message || undefined));
+            reject(new WebSocketClosedBeforeAuthenticationError(code, message || undefined));
             return;
           }
-          rejectOnce(new WebSocketClosedBeforeOpenError(code, message || undefined));
+          reject(new WebSocketClosedBeforeOpenError(code, message || undefined));
         });
 
         ws.on("error", (err) => {
-          void captureSdk
-            .captureWsEventAsync?.({
-              url: opts.wsUrl,
-              direction: "local",
-              kind: "error",
-              flowId,
-              errorText: String(err),
-              meta: { subsystem: "mattermost-websocket" },
-            })
-            .catch(() => {});
+          captureEvent({
+            direction: "local",
+            kind: "error",
+            errorText: String(err),
+          });
           opts.runtime.error?.(`mattermost websocket error: ${String(err)}`);
           opts.statusSink?.({
             connected: false,
@@ -475,14 +404,4 @@ export function createMattermostConnectOnce(
       opts.abortSignal?.removeEventListener("abort", onAbort);
     }
   };
-}
-
-function reasonToString(reason: Buffer | string | undefined): string {
-  if (!reason) {
-    return "";
-  }
-  if (typeof reason === "string") {
-    return reason;
-  }
-  return reason.length > 0 ? reason.toString("utf8") : "";
 }

@@ -1,4 +1,3 @@
-// Telegram type declarations define plugin contracts.
 import type { Bot } from "grammy";
 import type { Message } from "grammy/types";
 import type {
@@ -26,7 +25,7 @@ export type TelegramMediaRef = {
   fileName?: string;
   stickerMetadata?: StickerMetadata;
   sourceMessageId?: string;
-  unavailable?: { reason: "oversize"; limitMb: number } | { reason: "download-failed" };
+  unavailable?: { reason: "oversize"; limit: string } | { reason: "download-failed" };
 };
 
 export type TelegramChannelIngressResolver = (
@@ -81,6 +80,7 @@ export type BuildTelegramMessageContextParams = {
   storeAllowFrom: string[];
   options?: TelegramMessageContextOptions;
   bot: Bot;
+  resolveDirectAvatar?: (ctx: TelegramContext, cfg: OpenClawConfig) => string | undefined;
   cfg: OpenClawConfig;
   account: { accountId: string };
   ownerAgentId?: string;
@@ -95,7 +95,7 @@ export type BuildTelegramMessageContextParams = {
     agentId?: string;
     sessionKey: string;
     cfg: OpenClawConfig;
-  }) => boolean | undefined;
+  }) => boolean | undefined | Promise<boolean | undefined>;
   resolveGroupRequireMention: (chatId: string | number, cfg: OpenClawConfig) => boolean;
   resolveTelegramGroupConfig: (
     chatId: string | number,
