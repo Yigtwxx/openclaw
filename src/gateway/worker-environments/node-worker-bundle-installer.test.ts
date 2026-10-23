@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { NODE_WORKER_BUNDLE_INSTALL_COMMAND } from "../../infra/node-commands.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import type { NodeWorkerBundleInstallInput } from "../../worker/node-bundle-install-protocol.js";
@@ -55,10 +55,7 @@ function installerFixture(
   nodes: NodeWorkerSupervisorNodeProof[],
   listCurrentNodes: NodeWorkerSupervisorTransport["listCurrentNodes"] = async () => nodes,
 ) {
-  let tokenId = 65;
-  const transfer = createNodeWorkerBundleTransferService({
-    generateToken: () => String.fromCharCode(tokenId++).repeat(43),
-  });
+  const transfer = createNodeWorkerBundleTransferService();
   const transport: NodeWorkerSupervisorTransport = {
     hasCurrentRunner: () => false,
     async getCurrentNode(nodeId) {
@@ -79,6 +76,7 @@ function installerFixture(
 
 function observedInstaller() {
   let clock = 1_000;
+  vi.spyOn(Date, "now").mockImplementation(() => clock);
   const log = { info: vi.fn(), warn: vi.fn() };
   const changed = vi.fn();
   const transfer = createNodeWorkerBundleTransferService();
@@ -95,7 +93,6 @@ function observedInstaller() {
     getTransport: () => transport,
     transfer,
     log,
-    now: () => clock,
     onObservationChange: changed,
   });
   return {
@@ -148,6 +145,7 @@ function observedInstaller() {
 }
 
 describe("Gateway node worker bundle installer", () => {
+  afterEach(() => vi.restoreAllMocks());
   it("publishes install phases and throttles byte notices and logs with its clock", async () => {
     const h = observedInstaller();
     const call = await h.start();
@@ -394,6 +392,47 @@ describe("Gateway node worker bundle installer", () => {
           expect(
             transfer.authorize({ token: input.archive.token, artifactKey: artifact.bundleHash }),
           ).toBeUndefined();
+        }
+      } finally {
+        transfer.closeAll();
+      }
+    },
+  );
+  it.each([
+    ["same", undefined, "resolves"],
+    ["different", "generation-2", "rejects"],
+  ] as const)(
+    "%s pairing authority on a replacement connection",
+    async (_mode, pairingGeneration, outcome) => {
+      const transfer = createNodeWorkerBundleTransferService();
+      const replacement = {
+        ...node,
+        connId: "conn-2",
+        ...(pairingGeneration ? { pairingGeneration } : {}),
+      };
+      let current = node;
+      const transport: NodeWorkerSupervisorTransport = {
+        hasCurrentRunner: () => false,
+        getCurrentNode: async (nodeId) => (node.nodeId === nodeId ? current : undefined),
+        listCurrentNodes: async () => [current],
+        isCurrent: (candidate) => candidate === current,
+        invoke: async () => {
+          current = replacement;
+          return { ok: true, payloadJSON: JSON.stringify(receipt) };
+        },
+      };
+      const ensure = createGatewayNodeWorkerBundleInstaller({
+        gatewayNamespace: "gateway-test",
+        getTransport: () => transport,
+        transfer,
+        log: { info: vi.fn(), warn: vi.fn() },
+      });
+      try {
+        const pending = ensure(installRequest(node));
+        if (outcome === "resolves") {
+          await expect(pending).resolves.toEqual(receipt);
+        } else {
+          await expect(pending).rejects.toThrow("connection is no longer current");
         }
       } finally {
         transfer.closeAll();

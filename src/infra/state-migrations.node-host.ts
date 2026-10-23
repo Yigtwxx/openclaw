@@ -22,11 +22,11 @@ import { withLegacyMigrationStateLock } from "./state-migrations.lock.js";
 import {
   LegacyMigrationSourceClaim,
   legacyMigrationSourceOrClaimMayExist,
-  legacyMigrationSourceSnapshotsMatch as sourceSnapshotsMatch,
   readLegacyMigrationSourceSnapshot,
   type LegacyMigrationSourceSnapshot as LegacySourceSnapshot,
 } from "./state-migrations.source-snapshot.js";
 import type { LegacyStateDetection, MigrationMessages } from "./state-migrations.types.js";
+import { decodeUtf8Input } from "./utf8-input.js";
 
 const LEGACY_NODE_HOST_MAX_BYTES = 64 * 1024;
 const CONFIG_KEYS = new Set(["version", "nodeId", "token", "displayName", "gateway"]);
@@ -93,8 +93,8 @@ function parseLegacyGateway(value: unknown): NodeHostGatewayConfig | undefined {
   }
   const gateway: NodeHostGatewayConfig = {
     host: optionalLegacyString(value.host, "legacy node-host gateway host"),
-    port: port as number | undefined,
-    tls: value.tls as boolean | undefined,
+    port,
+    tls: value.tls,
     tlsFingerprint: optionalLegacyString(
       value.tlsFingerprint,
       "legacy node-host gateway tlsFingerprint",
@@ -106,7 +106,7 @@ function parseLegacyGateway(value: unknown): NodeHostGatewayConfig | undefined {
 }
 
 function parseLegacyNodeHostConfig(snapshot: LegacySourceSnapshot): CanonicalNodeHostState {
-  const parsed = JSON.parse(snapshot.raw) as unknown;
+  const parsed = JSON.parse(decodeUtf8Input(snapshot.buffer, "Legacy node-host config")) as unknown;
   if (!isRecord(parsed)) {
     throw new Error("legacy node-host config must be an object");
   }
@@ -181,8 +181,8 @@ function rowToCanonicalState(row: {
   const cloudflareAccess = normalizeNodeHostCloudflareAccessConfig(storedGateway?.cloudflareAccess);
   const gateway: NodeHostGatewayConfig = {
     host: nullableNonEmptyString(storedGateway?.host, "gateway_host"),
-    port: typeof gatewayPort === "number" ? gatewayPort : undefined,
-    tls: typeof gatewayTls === "boolean" ? gatewayTls : undefined,
+    port: gatewayPort,
+    tls: gatewayTls,
     tlsFingerprint: nullableNonEmptyString(
       storedGateway?.tlsFingerprint,
       "gateway_tls_fingerprint",
@@ -277,24 +277,6 @@ function migrateIntoDatabase(params: { env: NodeJS.ProcessEnv; legacy: Canonical
         );
         imported = expected.updatedAtMs === params.legacy.updatedAtMs;
       }
-
-      const verifiedRow = executeSqliteQueryTakeFirstSync(
-        db,
-        stateDb
-          .selectFrom("config_machine_state")
-          .selectAll()
-          .where("state_key", "=", NODE_HOST_CONFIG_KEY),
-      );
-      if (!verifiedRow) {
-        throw new Error("SQLite verification failed for node-host config");
-      }
-      const verified = rowToCanonicalState(verifiedRow);
-      if (
-        !configsEqual(verified.config, expected.config) ||
-        verified.updatedAtMs !== expected.updatedAtMs
-      ) {
-        throw new Error("SQLite verification failed for node-host config");
-      }
     },
     { env: params.env },
   );
@@ -347,23 +329,14 @@ export async function migrateLegacyNodeHostConfig(params: {
           }),
       });
 
-      let snapshot: LegacySourceSnapshot;
-      let legacy: CanonicalNodeHostState;
-      try {
-        await source.recover("interrupted node-host Doctor claim conflicts with its source");
-        if (!(await source.exists())) {
-          return { changes, warnings };
-        }
-        snapshot = await source.read();
-        legacy = parseLegacyNodeHostConfig(snapshot);
-        params.beforeVerify?.();
-        if (!sourceSnapshotsMatch(await source.read(), snapshot)) {
-          throw new Error("legacy node-host source changed after Doctor loaded it");
-        }
-      } catch (error) {
-        warnings.push(`Failed reading legacy node-host state: ${String(error)}`);
+      await source.recover("interrupted node-host Doctor claim conflicts with its source");
+      if (!(await source.exists())) {
         return { changes, warnings };
       }
+      const snapshot = await source.read();
+      const legacy = parseLegacyNodeHostConfig(snapshot);
+      params.beforeVerify?.();
+      await source.verify(snapshot, "legacy node-host source changed after Doctor loaded it");
 
       let result: ReturnType<typeof migrateIntoDatabase>;
       try {
