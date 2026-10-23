@@ -10,11 +10,11 @@ import {
 import type { SessionEntryReadWorkerOwner } from "../../config/sessions/session-entry-read-runtime.js";
 import { kickSessionHistoryDiskBudgetMaintenance } from "../../config/sessions/session-history-eviction.js";
 import type { ResolvedSessionMaintenanceConfig } from "../../config/sessions/store-maintenance.js";
-import { SqliteWorkerError } from "../../infra/sqlite-worker-contract.js";
+import { wrapSqliteWorkerError } from "../../infra/sqlite-worker-contract.js";
 import type { SqliteWorkerOperationAdmission } from "../../infra/sqlite-worker-operation-admission.js";
 import type { RetainedWorkerTransactionAdmission } from "../../infra/sqlite-worker-operation-settlement.js";
 import type { OpenClawAgentDatabaseOptions } from "../../state/openclaw-agent-db.js";
-import type { OpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
+import type { OpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution-contract.js";
 import type { AcpSessionControlBinding } from "./session-meta-control.types.js";
 import {
   captureAcpSessionEntryBinding,
@@ -84,7 +84,7 @@ export async function updateAcpSessionStoreEntry(params: {
             (error: unknown) => ({ ok: false as const, error }),
           );
         if (admitted) {
-          await admitted.retained.settled;
+          const settlement = await admitted.retained.settled;
           const receipt = admitted.admission.committed?.facts;
           if (isRecord(receipt) && receipt.kind === "acp-entry-mutation") {
             // SAFETY: this command's retained native receipt is emitted by its paired finite kernel.
@@ -98,12 +98,15 @@ export async function updateAcpSessionStoreEntry(params: {
               identity.physicalIdentity,
               published.previous,
               published.current,
+              published.prepared,
             );
           }
           if (unknown) {
-            throw new SqliteWorkerError(
+            throw wrapSqliteWorkerError(
               "ACP entry mutation has no confirmed native settlement",
               "outcome-unknown",
+              !outcome.ok ? outcome.error : undefined,
+              settlement.kind !== "completed" ? settlement.error : undefined,
             );
           }
         }
@@ -129,7 +132,18 @@ export async function updateAcpSessionStoreEntry(params: {
         const receipt = facts.publication as NonNullable<
           AcpSessionEntryMutationResult["publication"]
         >;
-        publication?.begin(receipt.changedKeys, receipt.membershipInvalidatedKeys);
+        publication?.begin(
+          receipt.changedKeys,
+          receipt.membershipInvalidatedKeys,
+          receipt.sharingUnchangedKeys,
+          receipt.generationUnchangedKeys,
+          undefined,
+          new Map(
+            [...receipt.current].filter(
+              ([key]) => !receipt.unavailableParticipantKeys?.includes(key),
+            ),
+          ),
+        );
       }
     },
     execution,
@@ -147,12 +161,12 @@ export async function updateAcpSessionStoreEntry(params: {
       maintenanceConfig,
       storePath: params.storePath,
     });
+    kickSessionHistoryDiskBudgetMaintenance({
+      agentId: scope.agentId,
+      env: scope.env,
+      storePath: params.storePath,
+      maintenanceConfig,
+    });
   }
-  kickSessionHistoryDiskBudgetMaintenance({
-    agentId: scope.agentId,
-    env: scope.env,
-    storePath: params.storePath,
-    maintenanceConfig,
-  });
   return result;
 }

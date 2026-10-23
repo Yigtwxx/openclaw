@@ -9,6 +9,7 @@ import type {
 } from "../config/types.secrets.js";
 import { openRootFileSync } from "../infra/boundary-file-read.js";
 import { isPathInside } from "../infra/path-guards.js";
+import { resolveRuntimeArgs } from "../infra/runtime-worker-url.js";
 import { normalizePluginsConfig, type NormalizedPluginsConfig } from "../plugins/config-state.js";
 import { shouldRejectHardlinkedPluginFiles } from "../plugins/hardlink-policy.js";
 import { isActivatedManifestOwner } from "../plugins/manifest-owner-policy.js";
@@ -17,7 +18,7 @@ import type { PluginManifestSecretProviderIntegration } from "../plugins/manifes
 import { isValidSecretProviderAlias } from "./ref-contract.js";
 
 /** Secret provider preset exposed by an active trusted plugin integration. */
-export type SecretProviderIntegrationPreset = {
+type SecretProviderIntegrationPreset = {
   id: string;
   pluginId: string;
   providerAlias: string;
@@ -26,7 +27,6 @@ export type SecretProviderIntegrationPreset = {
   providerConfig: PluginIntegrationSecretProviderConfig;
 };
 
-/** Result of materializing a plugin integration into a manual exec provider config. */
 type SecretProviderIntegrationResolution =
   | {
       ok: true;
@@ -56,7 +56,9 @@ function isSecurePosixPathStat(stat: fs.Stats): boolean {
   if (process.platform === "win32") {
     return true;
   }
-  if ((stat.mode & 0o022) !== 0) {
+  // Match plugin discovery, which already loads this plugin's code at the same modes:
+  // group write is the default under user-private-group umasks (002), world write is not.
+  if ((stat.mode & 0o002) !== 0) {
     return false;
   }
   if (typeof process.getuid !== "function" || typeof stat.uid !== "number") {
@@ -146,7 +148,7 @@ function materializeExecProviderConfig(
   return {
     source: "exec",
     command: process.execPath,
-    ...(args ? { args } : {}),
+    ...(args ? { args: [...resolveRuntimeArgs(), ...args] } : {}),
     ...(integration.timeoutMs !== undefined ? { timeoutMs: integration.timeoutMs } : {}),
     ...(integration.noOutputTimeoutMs !== undefined
       ? { noOutputTimeoutMs: integration.noOutputTimeoutMs }
@@ -193,7 +195,6 @@ function isValidPluginIntegrationProviderId(value: string): boolean {
   return value.length > 0 && value.length <= PLUGIN_INTEGRATION_PROVIDER_ID_MAX_LENGTH;
 }
 
-/** Narrows a secret provider config to the plugin-integration exec shape. */
 export function isPluginIntegrationSecretProviderConfig(
   value: unknown,
 ): value is PluginIntegrationSecretProviderConfig {

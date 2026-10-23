@@ -1,21 +1,34 @@
 import { MeetingPlatformAdapter } from "openclaw/plugin-sdk/meeting-runtime";
 import { SLACK_HUDDLE_SELECTORS } from "./slack-huddles-selectors.js";
-import { slackHuddleStatusCallSource } from "./slack-huddles-status-call-source.js";
+import { slackHuddleStatusCall } from "./slack-huddles-status-call-source.js";
 import {
   SLACK_HUDDLE_JOIN_SETTLE_MS,
-  slackHuddleStatusPreludeSource,
+  slackHuddleStatusPrelude,
 } from "./slack-huddles-status-prejoin-source.js";
 import { normalizeSlackHuddleUrlForReuse } from "./slack-huddles-urls.js";
 
-function pageIdentityFunctionSource(expectedIdentity: string | undefined): string {
-  // Team-scoped requests need the page's team to match; a page URL without one fails closed.
-  const teamScoped = /^slack-huddle:[TE][A-Z0-9]+:/.test(expectedIdentity ?? "");
-  const ownershipHooks = JSON.stringify({
-    inHuddle: SLACK_HUDDLE_SELECTORS.channelHeaderInHuddle,
-    inCall: SLACK_HUDDLE_SELECTORS.inCall,
-  });
-  // Status, audio capture, captions, and leave all resolve ownership through this identity.
-  return `const meetingIdentity = (rawUrl) => {
+export const slackHuddlePageScripts = MeetingPlatformAdapter.createPageScripts({
+  platform: {
+    audioOutputElementIdPrefix: "openclaw-slack-huddle-audio-output-",
+    manualActionReasonPrefix: "slack",
+    displayName: "Slack huddle",
+    globals: {
+      audioOutputs: "__openclawSlackHuddleAudioOutputs",
+      captionArchive: "__openclawSlackHuddleCaptionArchive",
+      captions: "__openclawSlackHuddleCaptions",
+      meeting: "__openclawSlackHuddle",
+    },
+  },
+  normalizeUrl: normalizeSlackHuddleUrlForReuse,
+  pageIdentitySource: (expectedIdentity) => {
+    // Team-scoped requests need the page's team to match; a page URL without one fails closed.
+    const teamScoped = /^slack-huddle:[TE][A-Z0-9]+:/.test(expectedIdentity ?? "");
+    const ownershipHooks = JSON.stringify({
+      inHuddle: SLACK_HUDDLE_SELECTORS.channelHeaderInHuddle,
+      inCall: SLACK_HUDDLE_SELECTORS.inCall,
+    });
+    // Status, audio capture, captions, and leave all resolve ownership through this identity.
+    return `const meetingIdentity = (rawUrl) => {
     try {
       const url = new URL(rawUrl);
       if (url.protocol !== "https:" || url.port || url.username || url.password ||
@@ -44,25 +57,7 @@ function pageIdentityFunctionSource(expectedIdentity: string | undefined): strin
         : identity;
     } catch { return undefined; }
   };`;
-}
-
-export const {
-  audioCapture: slackHuddleAudioCaptureScript,
-  status: slackHuddleStatusScript,
-  transcript: slackHuddleTranscriptScript,
-  leave: slackHuddleLeaveScript,
-} = MeetingPlatformAdapter.createPageScripts({
-  platform: {
-    displayName: "Slack huddle",
-    globals: {
-      audioOutputs: "__openclawSlackHuddleAudioOutputs",
-      captionArchive: "__openclawSlackHuddleCaptionArchive",
-      captions: "__openclawSlackHuddleCaptions",
-      meeting: "__openclawSlackHuddle",
-    },
   },
-  normalizeUrl: normalizeSlackHuddleUrlForReuse,
-  pageIdentitySource: pageIdentityFunctionSource,
   selectors: SLACK_HUDDLE_SELECTORS,
   toggleStateFunction: () => `(input) => {
       if (input?.ariaChecked === "true") return "on";
@@ -71,8 +66,8 @@ export const {
       if (/^mute microphone(?: mute microphone)?$/i.test(input?.label || "")) return "on";
       return undefined;
     }`,
-  statusPreludeSource: slackHuddleStatusPreludeSource,
-  statusCallSource: slackHuddleStatusCallSource,
+  statusPrelude: slackHuddleStatusPrelude,
+  statusCall: slackHuddleStatusCall,
   audioOwnershipSource: ({ expectedIdentity, pageIdentitySource }) => `
       ${pageIdentitySource}
       const expectedIdentity = ${JSON.stringify(expectedIdentity)};

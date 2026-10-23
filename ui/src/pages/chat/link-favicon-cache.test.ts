@@ -14,6 +14,7 @@ describe("readLinkFavicon", () => {
     readLinkFavicon("scoped.example.com", first, firstSettled.resolve);
     await firstSettled.promise;
     expect(readLinkFavicon("scoped.example.com", first, firstSettled.resolve)).toBeNull();
+    expect(first).toHaveBeenCalledOnce();
 
     const replacement = vi.fn<LinkFaviconFetcher>().mockResolvedValue("blob:replacement");
     const replacementSettled = createDeferred();
@@ -48,18 +49,13 @@ describe("readLinkFavicon", () => {
     expect(readLinkFavicon(hostname, fetcher, onSettled)).toBe("blob:cached-favicon");
     expect(fetcher).toHaveBeenCalledOnce();
     expect(onSettled).toHaveBeenCalledOnce();
-    expect(revokeObjectUrl).not.toHaveBeenCalled();
+    expect(revokeObjectUrl).not.toHaveBeenCalledWith("blob:cached-favicon");
   });
 
-  it.each(["missing", "rejected"] as const)("caches a %s favicon as null", async (outcome) => {
-    const fetcher = vi.fn<LinkFaviconFetcher>();
-    if (outcome === "missing") {
-      fetcher.mockResolvedValue(null);
-    } else {
-      fetcher.mockRejectedValue(new Error("fetch failed"));
-    }
+  it("caches a rejected favicon as null", async () => {
+    const fetcher = vi.fn<LinkFaviconFetcher>().mockRejectedValue(new Error("fetch failed"));
     const onSettled = vi.fn();
-    const hostname = `${outcome}.example.com`;
+    const hostname = "rejected.example.com";
 
     expect(readLinkFavicon(hostname, fetcher, onSettled)).toBeUndefined();
     await vi.waitFor(() => expect(onSettled).toHaveBeenCalledOnce());

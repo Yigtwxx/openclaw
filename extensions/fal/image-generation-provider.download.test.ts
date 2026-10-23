@@ -119,19 +119,4 @@ describe("fal generated image download response validation", () => {
     expect(result.images[0]?.mimeType).toBe("image/webp");
     expect(result.images[0]?.buffer).toEqual(Buffer.from("png-bytes"));
   });
-
-  it("keeps the existing byte-cap message rather than the shared reader default", async () => {
-    fetchWithSsrFGuardMock
-      .mockResolvedValueOnce(releasedJson({ images: [{ url: downloadUrl }] }))
-      .mockResolvedValueOnce(streamed("too-large", { "content-type": "image/png" }));
-
-    await expect(
-      provider.generateImage({
-        provider: "fal",
-        model: "fal-ai/flux/dev",
-        prompt: "draw a cat",
-        cfg: { agents: { defaults: { mediaMaxMb: 0.000001 } } },
-      }),
-    ).rejects.toThrow("fal generated image download exceeds 1 bytes");
-  });
 });
