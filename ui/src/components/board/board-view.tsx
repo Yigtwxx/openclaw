@@ -1,13 +1,14 @@
 import type { JSX as SolidJSX } from "@solidjs/web";
 import { createEffect, createMemo, createSignal, Errored, For, onSettled, Show } from "solid-js";
+import { registerBoardDocumentEnglish } from "../../i18n/locales/en-board-document.ts";
+import { BOARD_GRID_COLUMNS } from "../../lib/board/grid-constants.ts";
 import {
-  BOARD_GRID_COLUMNS,
   BOARD_DOCUMENT_AUTO_MAX_ROWS,
   boardWidgetGridItems,
   FINE_POINTER_QUERY,
   layout,
 } from "../../lib/board/grid.ts";
-import { t } from "../../lib/reactive/i18n.ts";
+import { registerEnglishCatalog, t } from "../../lib/reactive/i18n.ts";
 import { listen } from "../../lib/reactive/listener.ts";
 import { defineSolidBridge, type SolidBridgeElement } from "../../lib/solid-bridge.ts";
 import { PanelLoadingSkeleton } from "../solid/panel-loading-skeleton.tsx";
@@ -22,6 +23,8 @@ import {
 } from "./board-view-state.ts";
 import type { BoardWidgetCellMethods, BoardWidgetCellProps } from "./board-widget-cell-options.ts";
 import { BoardWidgetCell } from "./board-widget-cell.solid.tsx";
+
+registerEnglishCatalog(registerBoardDocumentEnglish);
 
 export type { BoardViewProps } from "./board-view-state.ts";
 
@@ -66,8 +69,9 @@ function BoardViewContent(props: BoardViewProps, host: BoardViewElement) {
     const widgets = (snapshot?.widgets ?? []).filter(
       (widget) => owner.visitedTabs.has(widget.tabId) || entries.has(cellKey(widget.name)),
     );
-    const rects = tabs.flatMap((tab) =>
-      layout(
+    const positions = new Map<string, number>();
+    const rects = tabs.flatMap((tab) => {
+      const tabRects = layout(
         (tab.tabId === activeTabId && state.gesture.name ? state.previewItems : null) ??
           boardWidgetGridItems(
             widgets.filter((widget) => widget.tabId === tab.tabId),
@@ -76,8 +80,10 @@ function BoardViewContent(props: BoardViewProps, host: BoardViewElement) {
             props.pageWidgetName,
           ),
         props.fitAutoContent ? BOARD_DOCUMENT_AUTO_MAX_ROWS : undefined,
-      ),
-    );
+      );
+      tabRects.forEach((rect, index) => positions.set(rect.name, index));
+      return tabRects;
+    });
     const activeNames = new Set(activeWidgets.map((widget) => widget.name));
     const activeRects = rects.filter((rect) => activeNames.has(rect.name));
     const fullWidth = activeWidgets.length === 1 && activeWidgets[0]?.sizeW === BOARD_GRID_COLUMNS;
@@ -88,7 +94,6 @@ function BoardViewContent(props: BoardViewProps, host: BoardViewElement) {
         activeWidgets[0]?.pluginKind === "browser:dashboard");
     const loading = !snapshot || state.initialLoading;
     const widgetsByName = new Map(widgets.map((widget) => [widget.name, widget]));
-    const positions = new Map(activeRects.map((rect, index) => [rect.name, index]));
     const focusName = activeRects.some((rect) => rect.name === state.focusName)
       ? state.focusName
       : (activeRects[0]?.name ?? "");

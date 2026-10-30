@@ -1,9 +1,19 @@
 import type { MessagePort } from "node:worker_threads";
 import type { PluginInstallRoots } from "./install-root-context.js";
-import type { BundledPluginReloadSource } from "./plugin-bundled-reload.js";
 import type { GenerationWireValue } from "./plugin-generation-worker-codec.js";
 import type { PluginSourceCaptureStorage } from "./plugin-instance-invocation.types.js";
 import type { AdmissionState } from "./plugin-native-admission-state.js";
+
+export type PluginGenerationInspection =
+  | {
+      kind: "dependencies";
+      entries: readonly { rootDir: string; entryFile: string }[];
+      dependencyRoot?: string;
+    }
+  | {
+      kind: "sources";
+      entries: readonly { pluginId: string; rootDir: string; entryFile?: string }[];
+    };
 
 export type GenerationWorkerInput = (
   | {
@@ -11,12 +21,12 @@ export type GenerationWorkerInput = (
       captureId: number;
       rootDir: string;
       entryFile?: string | readonly string[];
-      bundledReloadSource?: BundledPluginReloadSource;
       storage: PluginSourceCaptureStorage;
       installRoots: PluginInstallRoots;
       readOnly: boolean;
       scratch: string;
       managedRoot?: string;
+      inspection?: PluginGenerationInspection;
       admission: Pick<
         AdmissionState,
         "owners" | "managedRoots" | "receipts" | "files" | "namespaces"
@@ -24,8 +34,13 @@ export type GenerationWorkerInput = (
       callbackPort?: MessagePort;
       progressSignal?: Int32Array<SharedArrayBuffer>;
     }
-  | { operation: "call"; handle: number; args: GenerationWireValue[]; asynchronous: boolean }
-  | { operation: "close" }
+  | {
+      operation: "call";
+      captureId: number;
+      handle: number;
+      args: GenerationWireValue[];
+      asynchronous: boolean;
+    }
 ) & { nativeLoads?: string[] };
 export type GenerationWorkerReply = (
   | { value: GenerationWireValue; resources: number; admission?: GenerationWireValue }

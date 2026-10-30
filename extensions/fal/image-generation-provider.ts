@@ -126,7 +126,6 @@ const FAL_IMAGE_MALFORMED_RESPONSE = "fal image generation response malformed";
 const DEFAULT_HTTP_TIMEOUT_MS = 30_000;
 
 type FalImageSize = string | { width: number; height: number };
-type FalEditEndpointSuffix = "edit" | "image-to-image";
 type FalImageModelSchema = {
   geometry: "image_size" | "native_aspect_ratio";
   aspectRatios?: readonly string[];
@@ -136,7 +135,7 @@ type FalImageModelSchema = {
   maxInputImages: number;
   referenceLimitLabel: string;
   referenceLimitNoun: "reference image" | "style reference";
-  appendEditPath: false | FalEditEndpointSuffix;
+  appendEditPath: false | "edit" | "image-to-image";
   supportsCount: boolean;
   supportsOutputFormat: boolean;
 };
@@ -414,6 +413,10 @@ async function fetchImageBuffer(
   }
 }
 
+function mapGptImage25Models<T>(value: () => T): Record<string, T> {
+  return Object.fromEntries(FAL_GPT_IMAGE_25_MODELS.map((model) => [model, value()]));
+}
+
 export function buildFalImageGenerationProvider(): ImageGenerationProvider {
   return {
     id: "fal",
@@ -439,9 +442,7 @@ export function buildFalImageGenerationProvider(): ImageGenerationProvider {
         maxCount: 4,
         maxInputImages: 1,
         maxInputImagesByModel: {
-          ...Object.fromEntries(
-            FAL_GPT_IMAGE_25_MODELS.map((model) => [model, GPT_IMAGE_25_EDIT_MAX_INPUT_IMAGES]),
-          ),
+          ...mapGptImage25Models(() => GPT_IMAGE_25_EDIT_MAX_INPUT_IMAGES),
           [FAL_NANO_BANANA_MODEL]: NANO_BANANA_LEGACY_EDIT_MAX_INPUT_IMAGES,
           [`${FAL_NANO_BANANA_MODEL}/edit`]: NANO_BANANA_LEGACY_EDIT_MAX_INPUT_IMAGES,
         },
@@ -459,7 +460,7 @@ export function buildFalImageGenerationProvider(): ImageGenerationProvider {
       geometry: {
         sizes: [...FAL_SUPPORTED_SIZES],
         sizesByModel: {
-          ...Object.fromEntries(FAL_GPT_IMAGE_25_MODELS.map((model) => [model, []])),
+          ...mapGptImage25Models(() => []),
           [FAL_KREA_2_MEDIUM_MODEL]: [],
           [FAL_KREA_2_LARGE_MODEL]: [],
         },
@@ -485,7 +486,7 @@ export function buildFalImageGenerationProvider(): ImageGenerationProvider {
         ),
         resolutions: ["1K", "2K", "4K"],
         resolutionsByModel: {
-          ...Object.fromEntries(FAL_GPT_IMAGE_25_MODELS.map((model) => [model, []])),
+          ...mapGptImage25Models(() => []),
           [FAL_KREA_2_MEDIUM_MODEL]: [],
           [FAL_KREA_2_LARGE_MODEL]: [],
           [FAL_NANO_BANANA_MODEL]: [],
@@ -500,15 +501,9 @@ export function buildFalImageGenerationProvider(): ImageGenerationProvider {
       },
       output: {
         formats: [...FAL_OUTPUT_FORMATS],
-        formatsByModel: Object.fromEntries(
-          FAL_GPT_IMAGE_25_MODELS.map((model) => [model, [...GPT_IMAGE_25_OUTPUT_FORMATS]]),
-        ),
-        qualitiesByModel: Object.fromEntries(
-          FAL_GPT_IMAGE_25_MODELS.map((model) => [model, [...GPT_IMAGE_25_QUALITIES]]),
-        ),
-        backgroundsByModel: Object.fromEntries(
-          FAL_GPT_IMAGE_25_MODELS.map((model) => [model, [...GPT_IMAGE_25_BACKGROUNDS]]),
-        ),
+        formatsByModel: mapGptImage25Models(() => [...GPT_IMAGE_25_OUTPUT_FORMATS]),
+        qualitiesByModel: mapGptImage25Models(() => [...GPT_IMAGE_25_QUALITIES]),
+        backgroundsByModel: mapGptImage25Models(() => [...GPT_IMAGE_25_BACKGROUNDS]),
       },
     },
     async generateImage(req) {
