@@ -89,11 +89,7 @@ it.each([
   { label: "an HTML page", body: "<html>sign in</html>", contentType: "text/html" },
   { label: "an empty body", body: "", contentType: "audio/mpeg" },
 ])("rejects a generated music download that returns $label", async ({ body, contentType }) => {
-  mockAudio(
-    { audio: { url: "https://v3b.fal.media/files/b/out.mp3", content_type: "audio/mpeg" } },
-    streamedAudio(body),
-    contentType,
-  );
+  mockAudio({ audio: { url: audioUrl, content_type: "audio/mpeg" } }, body, contentType);
 
   await expect(generateMusic({ prompt: "short track" })).rejects.toThrow(
     "fal generated music download: malformed audio response",
